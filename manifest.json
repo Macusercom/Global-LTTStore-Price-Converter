@@ -1,5 +1,5 @@
 {
-  "manifest_version": 1,
+  "manifest_version": 3,
   "name": "LTTStore CAD → EUR (VAT 20%)",
   "version": "1.0.0",
   "description": "Adds EUR price next to CAD prices on global.lttstore.com product, cart, and checkout pages using live rates from open.er-api.com. Store/cart include 20% VAT; checkout is conversion only.",
