@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LTTStore EUR</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap');
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #181c27;
+      --border:    #262d3f;
+      --accent:    #4f8aff;
+      --accent-dim:#2a4a8a;
+      --success:   #34d399;
+      --muted:     #4a5168;
+      --text:      #e2e8f0;
+      --text-dim:  #8892a4;
+    }
+
+    body {
+      width: 320px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'IBM Plex Sans', sans-serif;
+      font-size: 13px;
+      padding: 0;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 18px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .logo {
+      width: 28px; height: 28px;
+      background: var(--accent);
+      border-radius: 6px;
+      display: grid;
+      place-items: center;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      color: #fff;
+      letter-spacing: -0.5px;
+      flex-shrink: 0;
+    }
+
+    .header-text { flex: 1; }
+    .header-title {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: 0.3px;
+    }
+    .header-sub {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 1px;
+    }
+
+    /* ── Main ── */
+    main { padding: 18px; display: flex; flex-direction: column; gap: 18px; }
+
+    /* ── Rate chip ── */
+    .rate-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .rate-label {
+      font-size: 11px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      font-family: 'IBM Plex Mono', monospace;
+    }
+    .rate-value {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent);
+    }
+    .rate-value.loading { color: var(--muted); }
+
+    /* ── VAT section ── */
+    .section-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-dim);
+      font-family: 'IBM Plex Mono', monospace;
+      margin-bottom: 8px;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+
+    .input-wrap {
+      position: relative;
+      flex: 1;
+    }
+
+    input[type="number"] {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 20px;
+      font-weight: 500;
+      padding: 10px 36px 10px 14px;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      -moz-appearance: textfield;
+    }
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
+
+    input[type="number"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(79,138,255,0.15);
+    }
+
+    .input-unit {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 14px;
+      color: var(--muted);
+      pointer-events: none;
+    }
+
+    button#save {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 0 18px;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      white-space: nowrap;
+      letter-spacing: 0.3px;
+    }
+    button#save:hover  { background: #6a9eff; }
+    button#save:active { transform: scale(0.97); }
+    button#save:disabled { background: var(--accent-dim); cursor: default; }
+
+    /* ── Preview strip ── */
+    .preview {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 11px 13px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .preview-label {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+    .preview-calc {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 12px;
+      color: var(--text);
+      text-align: right;
+    }
+    .preview-calc .cad { color: var(--text-dim); }
+    .preview-calc .arrow { color: var(--muted); margin: 0 4px; }
+    .preview-calc .eur { color: var(--success); font-weight: 600; }
+
+    /* ── Toast ── */
+    .toast {
+      position: fixed;
+      bottom: 14px; left: 50%;
+      transform: translateX(-50%) translateY(40px);
+      background: var(--success);
+      color: #052e1a;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 6px 14px;
+      border-radius: 20px;
+      letter-spacing: 0.3px;
+      opacity: 0;
+      transition: opacity 0.2s, transform 0.2s;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* ── Footer ── */
+    footer {
+      padding: 10px 18px 14px;
+      border-top: 1px solid var(--border);
+      font-size: 10px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+    }
+    footer span { font-family: 'IBM Plex Mono', monospace; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="logo">€$</div>
+    <div class="header-text">
+      <div class="header-title">LTTStore EUR Converter</div>
+      <div class="header-sub">global.lttstore.com</div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Live rate -->
+    <div class="rate-row">
+      <span class="rate-label">CAD → EUR Rate</span>
+      <span class="rate-value loading" id="rateDisplay">loading…</span>
+    </div>
+
+    <!-- VAT input -->
+    <div>
+      <div class="section-label">VAT / Sales Tax (Store &amp; Cart)</div>
+      <div class="input-row">
+        <div class="input-wrap">
+          <input type="number" id="vatInput" min="0" max="100" step="0.1" placeholder="20" />
+          <span class="input-unit">%</span>
+        </div>
+        <button id="save">Save</button>
+      </div>
+    </div>
+
+    <!-- Live preview -->
+    <div class="preview">
+      <span class="preview-label">Preview on CA$100</span>
+      <span class="preview-calc" id="previewCalc">
+        <span class="cad">CA$100</span>
+        <span class="arrow">→</span>
+        <span class="eur" id="previewEur">…</span>
+      </span>
+    </div>
+  </main>
+
+  <footer>
+    <span>Checkout: no VAT applied</span>
+    <span id="cacheAge"></span>
+  </footer>
+
+  <div class="toast" id="toast">Saved ✓</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

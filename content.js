@@ -1,5 +1,8 @@
-const VAT_MULTIPLIER_STORE_CART = 1.20; // 20% VAT (store + cart only)
-const VAT_MULTIPLIER_CHECKOUT = 1.00;   // checkout: conversion only (no added VAT)
+const VAT_KEY = "vatPercent";
+const VAT_DEFAULT_PERCENT = 20;
+
+// VAT_MULTIPLIER_CHECKOUT stays 1.00 (checkout = conversion only, no VAT)
+const VAT_MULTIPLIER_CHECKOUT = 1.00;
 
 const SUFFIX_CLASS = "kesch-eur-suffix";
 // Matches "(€ 12,34)" already appended by older versions (tolerates spacing).
@@ -14,6 +17,16 @@ function formatEur(value) {
   return `€ ${EUR_FORMATTER.format(value)}`;
 }
 
+// ── Dynamic VAT ───────────────────────────────────────────────────────────────
+// Reads the user-configured VAT percentage from storage and returns it as a
+// multiplier (e.g. 20% → 1.20). Falls back to 20% if nothing is stored yet.
+async function getVatMultiplier() {
+  const data = await chrome.storage.local.get(VAT_KEY);
+  const pct = typeof data[VAT_KEY] === "number" ? data[VAT_KEY] : VAT_DEFAULT_PERCENT;
+  return 1 + pct / 100;
+}
+
+// ── Page detection ────────────────────────────────────────────────────────────
 function pageKind() {
   const host = location.hostname;
   const path = location.pathname || "";
@@ -27,7 +40,6 @@ function isLikelyLttContext() {
   const host = location.hostname;
   if (host === "global.lttstore.com") return true;
 
-  // On Shopify checkout domains, use a light heuristic so we don't touch unrelated stores.
   const title = (document.title || "").toLowerCase();
   if (title.includes("lttstore")) return true;
 
@@ -37,11 +49,9 @@ function isLikelyLttContext() {
   return false;
 }
 
+// ── Number parsing ────────────────────────────────────────────────────────────
 function parseAmountFromDollarText(text) {
-  // Supports:
-  // - "$39.99 CAD"
-  // - "$99.99"
-  // - "$ 99,99" (NBSP + comma decimals)
+  // Supports "$39.99 CAD", "$99.99", "$ 99,99" (NBSP + comma decimals)
   const t = String(text || "").replace(/\u00A0/g, " ");
   const m = t.match(/\$\s*([0-9][0-9\s.,]*)/);
   if (!m) return null;
@@ -49,7 +59,7 @@ function parseAmountFromDollarText(text) {
   let num = m[1].replace(/\s/g, "");
   num = num.replace(/[.,]+$/, "");
 
-  const hasDot = num.includes(".");
+  const hasDot   = num.includes(".");
   const hasComma = num.includes(",");
 
   if (hasDot && hasComma) {
@@ -59,13 +69,11 @@ function parseAmountFromDollarText(text) {
       num = num.replace(/,/g, "");
     }
   } else if (hasComma) {
-    const last = num.lastIndexOf(",");
-    const frac = num.length - last - 1;
+    const frac = num.length - num.lastIndexOf(",") - 1;
     if (frac === 1 || frac === 2) num = num.replace(/\./g, "").replace(",", ".");
     else num = num.replace(/,/g, "");
   } else if (hasDot) {
-    const last = num.lastIndexOf(".");
-    const frac = num.length - last - 1;
+    const frac = num.length - num.lastIndexOf(".") - 1;
     if (frac === 1 || frac === 2) num = num.replace(/,/g, "");
     else num = num.replace(/\./g, "");
   }
@@ -74,16 +82,17 @@ function parseAmountFromDollarText(text) {
   return Number.isFinite(val) ? val : null;
 }
 
+// ── Background communication ──────────────────────────────────────────────────
 async function getRateFromBackground() {
   const resp = await chrome.runtime.sendMessage({ type: "GET_CAD_EUR_RATE" });
   if (!resp?.ok) throw new Error(resp?.error || "Rate unavailable");
   return resp.rate;
 }
 
+// ── DOM helpers ───────────────────────────────────────────────────────────────
 function upsertSuffixInside(el, suffixText) {
-  // If the element is plain text, strip legacy text-based suffix first.
   if (el.childElementCount === 0) {
-    const raw = (el.textContent || "");
+    const raw  = (el.textContent || "");
     const base = raw.replace(EUR_SUFFIX_RE, "");
     if (raw !== base) el.textContent = base;
   }
@@ -102,96 +111,106 @@ function clearSuffixInside(el) {
   el.querySelectorAll(`:scope > span.${SUFFIX_CLASS}`).forEach((n) => n.remove());
 }
 
-function convertStorePriceItem(el, rate) {
-  // Store: keep exactly the " (€ ...)" bracket style (no injected spans).
+// ── Converters ────────────────────────────────────────────────────────────────
+function convertStorePriceItem(el, rate, vatMultiplier) {
   const raw = (el.textContent || "").trim();
   if (!raw.includes("CAD") || !raw.includes("$")) return;
 
   const base = raw.replace(EUR_SUFFIX_RE, "").trim();
-  const cad = parseAmountFromDollarText(base);
+  const cad  = parseAmountFromDollarText(base);
   if (cad === null) return;
 
-  const eurGross = cad * rate * VAT_MULTIPLIER_STORE_CART;
-  const next = `${base} (${formatEur(eurGross)})`;
+  const eurGross = cad * rate * vatMultiplier;
+  const next     = `${base} (${formatEur(eurGross)})`;
   if (raw !== next) el.textContent = next;
 }
 
-function convertCartPrice(el, rate) {
+function convertCartPrice(el, rate, vatMultiplier) {
   const raw = (el.textContent || "").trim();
-  if (!raw.includes("$")) {
-    clearSuffixInside(el);
-    return;
-  }
+  if (!raw.includes("$")) { clearSuffixInside(el); return; }
+
   const cad = parseAmountFromDollarText(raw);
   if (cad === null) return;
 
-  const eurGross = cad * rate * VAT_MULTIPLIER_STORE_CART;
+  const eurGross = cad * rate * vatMultiplier;
   upsertSuffixInside(el, ` (${formatEur(eurGross)})`);
 }
 
 function isEstimatedTaxesRow(el) {
-  const row = el.closest("[role='row'], tr, li, div");
-  const t = (row?.textContent || "").toLowerCase();
-  const hasTaxWord = t.includes("tax") || t.includes("steuern") || t.includes("steuer");
-  const looksLikeTotal = t.includes("total");
-  return hasTaxWord && !looksLikeTotal;
+  // Intentionally exclude bare 'div': .closest("div") always matches and
+  // its textContent can span the whole page.
+  const row = el.closest("[role='row'], tr, li");
+  const t   = (row?.textContent || "").toLowerCase();
+  return (t.includes("tax") || t.includes("steuern") || t.includes("steuer"))
+    && !t.includes("total");
 }
 
 function findCheckoutTotalsAndTaxes(root) {
-  const strongs = Array.from(root.querySelectorAll("strong"))
+  // Only query inline/leaf nodes – block containers like <div> accumulate all
+  // child text in textContent, making substring checks unreliable.
+  const allDollarNodes = Array.from(root.querySelectorAll("strong, span"))
     .filter((n) => (n.textContent || "").includes("$"));
 
-  const parsed = strongs
-    .map((n) => ({ n, v: parseAmountFromDollarText(n.textContent || "") }))
-    .filter((x) => typeof x.v === "number");
-
   let totalNode = null;
-  let totalVal = null;
-  if (parsed.length) {
-    parsed.sort((a, b) => b.v - a.v);
-    totalNode = parsed[0].n;
-    totalVal = parsed[0].v;
+  let totalVal  = null;
+
+  for (const n of allDollarNodes) {
+    const row = n.closest("[role='row'], tr, li");
+    if (!row) continue;
+    const rowText = (row.textContent || "").toLowerCase();
+    if (rowText.includes("total") && !rowText.includes("subtotal")) {
+      const v = parseAmountFromDollarText(n.textContent || "");
+      if (typeof v === "number" && (totalVal === null || v > totalVal)) {
+        totalNode = n;
+        totalVal  = v;
+      }
+    }
   }
 
-  const taxCandidates = Array.from(root.querySelectorAll("span, div, p, strong"))
+  // Fallback: highest <strong> value (flat-HTML checkouts)
+  if (!totalNode) {
+    const parsed = allDollarNodes
+      .filter((n) => n.tagName === "STRONG")
+      .map((n) => ({ n, v: parseAmountFromDollarText(n.textContent || "") }))
+      .filter((x) => typeof x.v === "number");
+    if (parsed.length) {
+      parsed.sort((a, b) => b.v - a.v);
+      totalNode = parsed[0].n;
+      totalVal  = parsed[0].v;
+    }
+  }
+
+  const taxCandidates = Array.from(root.querySelectorAll("span, strong"))
     .filter((n) => (n.textContent || "").includes("$") && isEstimatedTaxesRow(n))
     .map((n) => parseAmountFromDollarText(n.textContent || ""))
     .filter((v) => typeof v === "number");
 
-  let taxVal = null;
-  if (taxCandidates.length) taxVal = Math.max(...taxCandidates);
-
-  return { totalNode, totalVal, taxVal };
+  return {
+    totalNode,
+    totalVal,
+    taxVal: taxCandidates.length ? Math.max(...taxCandidates) : null,
+  };
 }
 
 function convertCheckout(el, rate, ctx) {
   const raw = (el.textContent || "").trim();
-  if (!raw.includes("$")) {
-    clearSuffixInside(el);
-    return;
-  }
-
-  // Never append EUR to the "Estimated taxes" line item itself.
-  if (isEstimatedTaxesRow(el)) {
-    clearSuffixInside(el);
-    return;
-  }
+  if (!raw.includes("$")) { clearSuffixInside(el); return; }
+  if (isEstimatedTaxesRow(el)) { clearSuffixInside(el); return; }
 
   const cad = parseAmountFromDollarText(raw);
   if (cad === null) return;
 
-  // For grand total: subtract estimated taxes first (so the displayed EUR total is tax-excluded).
-  if (ctx?.totalNode && el === ctx.totalNode && typeof ctx.totalVal === "number" && typeof ctx.taxVal === "number") {
+  if (ctx?.totalNode && el === ctx.totalNode
+      && typeof ctx.totalVal === "number" && typeof ctx.taxVal === "number") {
     const netCad = Math.max(0, ctx.totalVal - ctx.taxVal);
-    const eur = netCad * rate * VAT_MULTIPLIER_CHECKOUT; // conversion only
-    upsertSuffixInside(el, ` (${formatEur(eur)})`);
+    upsertSuffixInside(el, ` (${formatEur(netCad * rate * VAT_MULTIPLIER_CHECKOUT)})`);
     return;
   }
 
-  const eur = cad * rate * VAT_MULTIPLIER_CHECKOUT; // conversion only
-  upsertSuffixInside(el, ` (${formatEur(eur)})`);
+  upsertSuffixInside(el, ` (${formatEur(cad * rate * VAT_MULTIPLIER_CHECKOUT)})`);
 }
 
+// ── Target finding ────────────────────────────────────────────────────────────
 function findTargets(kind, root = document) {
   if (kind === "store") {
     return Array.from(root.querySelectorAll(".price-item"))
@@ -242,7 +261,10 @@ function findTargets(kind, root = document) {
   return [];
 }
 
-let scheduled = false;
+// ── Main update loop ──────────────────────────────────────────────────────────
+let scheduled    = false;
+let running      = false;
+let pendingUpdate = false;
 
 async function updateAll() {
   if (!isLikelyLttContext()) return;
@@ -250,39 +272,47 @@ async function updateAll() {
   const kind = pageKind();
   if (kind === "other") return;
 
+  if (running) { pendingUpdate = true; return; }
+  running      = true;
+  pendingUpdate = false;
+
   try {
-    const rate = await getRateFromBackground();
+    // Fetch rate and VAT multiplier in parallel
+    const [rate, vatMultiplier] = await Promise.all([
+      getRateFromBackground(),
+      getVatMultiplier(),
+    ]);
+
     const targets = findTargets(kind);
 
     if (kind === "store") {
-      targets.forEach((n) => convertStorePriceItem(n, rate));
-      return;
-    }
-
-    if (kind === "cart") {
-      targets.forEach((n) => convertCartPrice(n, rate));
-      return;
-    }
-
-    if (kind === "checkout") {
+      targets.forEach((n) => convertStorePriceItem(n, rate, vatMultiplier));
+    } else if (kind === "cart") {
+      targets.forEach((n) => convertCartPrice(n, rate, vatMultiplier));
+    } else if (kind === "checkout") {
       const ctx = findCheckoutTotalsAndTaxes(document);
       targets.forEach((n) => convertCheckout(n, rate, ctx));
-      return;
     }
-  } catch {
-    // ignore
+  } catch (err) {
+    console.debug("[LTTStore EUR]", err);
+  } finally {
+    running = false;
+    if (pendingUpdate) scheduleUpdate();
   }
 }
 
 function scheduleUpdate() {
   if (scheduled) return;
   scheduled = true;
-  setTimeout(() => {
-    scheduled = false;
-    updateAll();
-  }, 200);
+  setTimeout(() => { scheduled = false; updateAll(); }, 200);
 }
 
+// ── Message listener: VAT changed in popup → re-run immediately ───────────────
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === "VAT_UPDATED") scheduleUpdate();
+});
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
 scheduleUpdate();
 
 const obs = new MutationObserver(() => scheduleUpdate());

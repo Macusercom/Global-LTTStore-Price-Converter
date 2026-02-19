@@ -1,14 +1,25 @@
 {
   "manifest_version": 3,
   "name": "Global-LTTStore.com-EU-Price",
-  "version": "1.0.0",
-  "description": "Adds EUR price next to CAD prices on global.lttstore.com product, cart, and checkout pages using live rates from open.er-api.com. Store/cart include 20% VAT; checkout is conversion only.",
+  "version": "1.1.0",
+  "description": "Adds EUR price next to CAD prices on global.lttstore.com product, cart, and checkout pages using live rates from open.er-api.com. VAT rate is configurable via the extension popup.",
   "permissions": [
-    "storage"
+    "storage",
+    "tabs"
   ],
   "host_permissions": [
-    "https://open.er-api.com/*"
+    "https://open.er-api.com/*",
+    "https://global.lttstore.com/*",
+    "https://checkout.shopify.com/*",
+    "https://checkout.pci.shopifyinc.com/*"
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "LTTStore EUR Settings"
+  },
   "background": {
     "service_worker": "background.js"
   },
