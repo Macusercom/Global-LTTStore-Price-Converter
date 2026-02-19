@@ -1,9 +1,9 @@
 # Global-LTTStore.com-EU-Price
-A small Chrome Extension checking the currency conversion from CAD to EUR and adding VAT to the global LTTStore.com price created with ChatGPT and vibe coding.
+A small Chrome Extension checking the currency conversion from CAD to EUR and adding VAT to the global LTTStore.com price created with ChatGPT, Claude and vibe coding.
 
 
 ## Information
-This extension pulls the CAD/EUR conversion rate once a day and adds it in brackets to the CAD pricing with VAT included. The default VAT is 20% but it can be changed in `content.js` by changing `const VAT_MULTIPLIER_STORE_CART = 1.20;` (1.20 = 20%). The price with VAT also is added to the cart.
+This extension pulls the CAD/EUR conversion rate once a day and adds it in brackets to the CAD pricing with VAT included. The price with VAT also is added to the cart.
 
 During checkout, it will NOT add the VAT but only convert the net price from CAD to EUR as "Added Taxes" is extra due to the VAT being applied to shipping cost. To not make it confusing, it will not add VAT there.
 
@@ -40,3 +40,5 @@ Since LTTStore.com is split between global and US the plug-in did not work anymo
 ![Screenshot](images/image2.jpeg)
 
 ![Screenshot](images/image3.jpeg)
+
+![Screenshot](images/image4.jpeg)
