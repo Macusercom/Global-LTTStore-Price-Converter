@@ -9,6 +9,7 @@
   ],
   "host_permissions": [
     "https://open.er-api.com/*",
+    "https://api.frankfurter.app/*",
     "https://global.lttstore.com/*",
     "https://checkout.shopify.com/*",
     "https://checkout.pci.shopifyinc.com/*"

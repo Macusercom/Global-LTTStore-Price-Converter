@@ -1,12 +1,18 @@
 const VAT_KEY = "vatPercent";
 const VAT_DEFAULT_PERCENT = 20;
 
-// VAT_MULTIPLIER_CHECKOUT stays 1.00 (checkout = conversion only, no VAT)
+// VAT_MULTIPLIER_CHECKOUT stays 1.00 (checkout = conversion only, no VAT added here;
+// VAT will be collected by the buyer's country at import / by Shopify during checkout).
 const VAT_MULTIPLIER_CHECKOUT = 1.00;
 
 const SUFFIX_CLASS = "kesch-eur-suffix";
 // Matches "(€ 12,34)" already appended by older versions (tolerates spacing).
 const EUR_SUFFIX_RE = /\s*\(\s*€\s*[\d.,]+?\s*\)\s*$/;
+
+// ── Named constants ───────────────────────────────────────────────────────────
+const DEBOUNCE_DELAY_MS       = 200;  // wait for DOM to settle before re-scanning
+const CHECKOUT_RETRY_DELAY_MS = 600;  // extra wait for Shopify to inject the tax row
+const CHECKOUT_MAX_RETRIES    = 3;    // max re-scans before accepting missing tax data
 
 const EUR_FORMATTER = new Intl.NumberFormat("de-DE", {
   minimumFractionDigits: 2,
@@ -50,6 +56,13 @@ function isLikelyLttContext() {
 }
 
 // ── Number parsing ────────────────────────────────────────────────────────────
+/**
+ * Extracts a numeric CAD dollar amount from a raw text string.
+ * Handles US format ($1,234.56), EU format ($1.234,56),
+ * and NBSP-separated variants ($ 99,99). Returns null if no parseable amount found.
+ * @param {string} text - Raw text content, e.g. "$39.99 CAD"
+ * @returns {number|null}
+ */
 function parseAmountFromDollarText(text) {
   // Supports "$39.99 CAD", "$99.99", "$ 99,99" (NBSP + comma decimals)
   const t = String(text || "").replace(/\u00A0/g, " ");
@@ -111,6 +124,29 @@ function clearSuffixInside(el) {
   el.querySelectorAll(`:scope > span.${SUFFIX_CLASS}`).forEach((n) => n.remove());
 }
 
+// ── Loading indicator ─────────────────────────────────────────────────────────
+let loadingIndicator = null;
+const LOADING_CLASS  = "kesch-loading-indicator";
+
+function showLoadingIndicator() {
+  if (loadingIndicator) return;
+  if (!document.getElementById("kesch-style")) {
+    const style = document.createElement("style");
+    style.id = "kesch-style";
+    style.textContent = `.${LOADING_CLASS}{position:fixed;bottom:12px;right:12px;background:rgba(79,138,255,.85);color:#fff;font-size:11px;padding:4px 10px;border-radius:12px;z-index:999999;pointer-events:none;font-family:monospace}`;
+    document.head?.appendChild(style);
+  }
+  loadingIndicator = document.createElement("div");
+  loadingIndicator.className = LOADING_CLASS;
+  loadingIndicator.textContent = "€ …";
+  document.body?.appendChild(loadingIndicator);
+}
+
+function hideLoadingIndicator() {
+  loadingIndicator?.remove();
+  loadingIndicator = null;
+}
+
 // ── Converters ────────────────────────────────────────────────────────────────
 function convertStorePriceItem(el, rate, vatMultiplier) {
   const raw = (el.textContent || "").trim();
@@ -145,6 +181,13 @@ function isEstimatedTaxesRow(el) {
     && !t.includes("total");
 }
 
+/**
+ * Scans the Shopify checkout DOM for the grand total element and any estimated
+ * tax rows. The tax amount is subtracted before converting because VAT will be
+ * collected by the buyer's country at import (not applied here).
+ * @param {Document|Element} root
+ * @returns {{ totalNode: Element|null, totalVal: number|null, taxVal: number|null }}
+ */
 function findCheckoutTotalsAndTaxes(root) {
   // Only query inline/leaf nodes – block containers like <div> accumulate all
   // child text in textContent, making substring checks unreliable.
@@ -218,7 +261,8 @@ function findTargets(kind, root = document) {
   }
 
   if (kind === "cart") {
-    const selectors = [
+    // Fast path: try known specific selectors first
+    const CART_SELECTORS = [
       ".price.price--center.th_item_line_price",
       ".price--center.th_item_line_price",
       ".th_item_line_price .price",
@@ -228,11 +272,26 @@ function findTargets(kind, root = document) {
       ".th_cart_total_price",
     ];
     const out = new Set();
-    for (const sel of selectors) {
+    for (const sel of CART_SELECTORS) {
       root.querySelectorAll(sel).forEach((n) => {
         if ((n.textContent || "").includes("$")) out.add(n);
       });
     }
+
+    // Structural fallback: anchor to cart container and scan for price-like leaf nodes.
+    // Activates when the LTT Store theme changes and the selector list returns nothing.
+    if (out.size === 0) {
+      const cartRoot = root.querySelector(
+        'form[action="/cart"], [data-section-type="cart"], #cart, main'
+      ) || root;
+      cartRoot.querySelectorAll("span, p, div").forEach((n) => {
+        const t = n.textContent || "";
+        if (!t.includes("$")) return;
+        if (n.children.length > 2) return; // skip large container nodes
+        if (parseAmountFromDollarText(t) !== null) out.add(n);
+      });
+    }
+
     return Array.from(out);
   }
 
@@ -262,9 +321,10 @@ function findTargets(kind, root = document) {
 }
 
 // ── Main update loop ──────────────────────────────────────────────────────────
-let scheduled    = false;
-let running      = false;
-let pendingUpdate = false;
+let scheduled      = false;
+let running        = false;
+let pendingUpdate  = false;
+let checkoutRetryCount = 0;
 
 async function updateAll() {
   if (!isLikelyLttContext()) return;
@@ -273,8 +333,10 @@ async function updateAll() {
   if (kind === "other") return;
 
   if (running) { pendingUpdate = true; return; }
-  running      = true;
+  running       = true;
   pendingUpdate = false;
+
+  showLoadingIndicator();
 
   try {
     // Fetch rate and VAT multiplier in parallel
@@ -291,12 +353,22 @@ async function updateAll() {
       targets.forEach((n) => convertCartPrice(n, rate, vatMultiplier));
     } else if (kind === "checkout") {
       const ctx = findCheckoutTotalsAndTaxes(document);
+
+      // If Shopify hasn't injected the tax row yet, wait and retry rather than
+      // writing a wrong suffix (the race condition documented in the README).
+      if (ctx.totalNode && ctx.taxVal === null && checkoutRetryCount < CHECKOUT_MAX_RETRIES) {
+        checkoutRetryCount++;
+        setTimeout(() => { scheduled = false; updateAll(); }, CHECKOUT_RETRY_DELAY_MS);
+        return;
+      }
+      checkoutRetryCount = 0;
       targets.forEach((n) => convertCheckout(n, rate, ctx));
     }
   } catch (err) {
     console.debug("[LTTStore EUR]", err);
   } finally {
     running = false;
+    hideLoadingIndicator();
     if (pendingUpdate) scheduleUpdate();
   }
 }
@@ -304,7 +376,7 @@ async function updateAll() {
 function scheduleUpdate() {
   if (scheduled) return;
   scheduled = true;
-  setTimeout(() => { scheduled = false; updateAll(); }, 200);
+  setTimeout(() => { scheduled = false; updateAll(); }, DEBOUNCE_DELAY_MS);
 }
 
 // ── Message listener: VAT changed in popup → re-run immediately ───────────────
@@ -315,6 +387,40 @@ chrome.runtime.onMessage.addListener((msg) => {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 scheduleUpdate();
 
-const obs = new MutationObserver(() => scheduleUpdate());
-obs.observe(document.documentElement, { subtree: true, childList: true, characterData: true });
-window.addEventListener("popstate", scheduleUpdate);
+// Observe the most specific stable ancestor available; fall back to documentElement.
+// characterData is only needed on store pages (text nodes); cart/checkout use childList.
+function attachObserver() {
+  const kind = pageKind();
+  const target = (
+    document.querySelector("main") ||
+    document.querySelector("#MainContent") ||
+    document.body ||
+    document.documentElement
+  );
+  obs.observe(target, {
+    subtree:       true,
+    childList:     true,
+    characterData: kind === "store",
+  });
+}
+
+const obs = new MutationObserver((mutations) => {
+  // Ignore mutations caused by our own loading indicator to avoid re-triggering.
+  const selfMutation = mutations.every((m) =>
+    m.target === loadingIndicator ||
+    (m.target instanceof Element && m.target.classList.contains(LOADING_CLASS))
+  );
+  if (selfMutation) return;
+  scheduleUpdate();
+});
+
+attachObserver();
+window.addEventListener("popstate", () => {
+  checkoutRetryCount = 0;
+  scheduleUpdate();
+});
+
+// Node.js export guard for unit testing (no-op in Chrome extension context)
+if (typeof module !== "undefined") {
+  module.exports = { parseAmountFromDollarText };
+}
