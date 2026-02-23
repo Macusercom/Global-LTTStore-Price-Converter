@@ -39,6 +39,13 @@ async function getVatMultiplier() {
   return 1 + pct / 100;
 }
 
+// Returns the raw VAT percentage regardless of the includeVat toggle.
+// Used for notices that are always shown (checkout, cart).
+async function getVatPercent() {
+  const data = await chrome.storage.local.get(VAT_KEY);
+  return typeof data[VAT_KEY] === "number" ? data[VAT_KEY] : VAT_DEFAULT_PERCENT;
+}
+
 // ── Page detection ────────────────────────────────────────────────────────────
 function pageKind() {
   const host = location.hostname;
@@ -168,8 +175,9 @@ function hideLoadingIndicator() {
 // ── Tax-notice for checkout ────────────────────────────────────────────────────
 // Shopify only shows "Estimated taxes" when the threshold is met. If the row
 // is absent we inject a small note so the user isn't surprised at payment.
-// When rate/vatMultiplier/currency are provided, a VAT estimate is appended.
-function updateTaxNotice(rate, vatMultiplier, currency) {
+// When rate/vatPct/currency are provided, a VAT estimate is always appended
+// regardless of the "include VAT in store" toggle.
+function updateTaxNotice(rate, vatPct, currency) {
   const existing    = document.querySelector(`.${TAX_NOTICE_CLASS}`);
   const rowHeaders  = Array.from(document.querySelectorAll('[role="rowheader"]'));
 
@@ -185,14 +193,13 @@ function updateTaxNotice(rate, vatMultiplier, currency) {
   const totalRow = totalHeader.closest('[role="row"]');
   if (!totalRow) return;
 
-  // Build an estimated VAT line when VAT is enabled and we have a rate.
+  // Build an estimated VAT line when a VAT rate is configured and we have a rate.
   let vatLine = "";
-  if (rate && vatMultiplier > 1 && currency) {
+  if (rate && vatPct > 0 && currency) {
     const priceCell = totalRow.querySelector('[role="cell"]');
     const cadAmount = priceCell ? parseAmountFromDollarText(priceCell.textContent || "") : null;
     if (cadAmount !== null) {
       const localAmount  = cadAmount * rate;
-      const vatPct       = Math.round((vatMultiplier - 1) * 1000) / 10; // e.g. 20 or 8.1
       const vatAmount    = localAmount * (vatPct / 100);
       const totalWithVat = localAmount + vatAmount;
       vatLine = `est. ~${vatPct}% VAT: ${formatCurrency(vatAmount, currency)} · total incl. taxes: ${formatCurrency(totalWithVat, currency)}`;
@@ -335,11 +342,12 @@ async function updateAll() {
   showLoadingIndicator();
 
   try {
-    // Fetch rates, VAT multiplier, and target currency in parallel
-    const [rates, vatMultiplier, currency] = await Promise.all([
+    // Fetch rates, VAT multiplier, raw VAT %, and target currency in parallel
+    const [rates, vatMultiplier, currency, vatPct] = await Promise.all([
       getRatesFromBackground(),
       getVatMultiplier(),
       getTargetCurrency(),
+      getVatPercent(),
     ]);
 
     const rate = rates[currency];
@@ -353,7 +361,7 @@ async function updateAll() {
       targets.forEach((n) => convertCartPrice(n, rate, vatMultiplier, currency));
     } else if (kind === "checkout") {
       targets.forEach((n) => convertCheckout(n, rate, currency));
-      updateTaxNotice(rate, vatMultiplier, currency);
+      updateTaxNotice(rate, vatPct, currency);
     }
   } catch (err) {
     console.debug("[LTTStore EUR]", err);
