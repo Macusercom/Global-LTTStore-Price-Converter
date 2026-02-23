@@ -1,33 +1,33 @@
-const API_URL         = "https://open.er-api.com/v6/latest/CAD";
-const FALLBACK_API_URL = "https://api.frankfurter.app/latest?from=CAD&to=EUR";
-const STORAGE_KEY      = "cadEurRateCache";
+const API_URL          = "https://open.er-api.com/v6/latest/CAD";
+const FALLBACK_API_URL = "https://api.frankfurter.app/latest?from=CAD";
+const STORAGE_KEY      = "cadRateCache";
 const TTL_MS           = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
- * Fetches the CAD→EUR rate from the primary API (open.er-api.com).
- * @returns {Promise<{rate: number, fetchedAt: number, apiTimeLastUpdateUtc: string|null}>}
+ * Fetches all CAD cross-rates from the primary API (open.er-api.com).
+ * @returns {Promise<{rates: Object, fetchedAt: number, apiTimeLastUpdateUtc: string|null}>}
  */
-async function fetchCadToEurRate() {
+async function fetchCadRates() {
   const res = await fetch(API_URL, { cache: "no-store" });
   if (!res.ok) throw new Error(`Rate fetch failed (${res.status})`);
   const data = await res.json();
 
-  // Expected shape: { result: "success", base_code: "CAD", rates: { EUR: <number>, ... } }
+  // Expected shape: { result: "success", base_code: "CAD", rates: { EUR: <number>, GBP: ..., ... } }
   if (data?.result !== "success" || data?.base_code !== "CAD" || typeof data?.rates?.EUR !== "number") {
     throw new Error("Unexpected rate response");
   }
 
   return {
-    rate: data.rates.EUR,
+    rates: data.rates,
     fetchedAt: Date.now(),
-    apiTimeLastUpdateUtc: data.time_last_update_utc ?? null
+    apiTimeLastUpdateUtc: data.time_last_update_utc ?? null,
   };
 }
 
 /**
- * Fetches the CAD→EUR rate from the Frankfurter fallback API.
- * Response shape: { rates: { EUR: number }, date: "YYYY-MM-DD" }
- * @returns {Promise<{rate: number, fetchedAt: number, apiTimeLastUpdateUtc: string|null}>}
+ * Fetches all CAD cross-rates from the Frankfurter fallback API.
+ * Response shape: { rates: { EUR: number, GBP: number, ... }, date: "YYYY-MM-DD" }
+ * @returns {Promise<{rates: Object, fetchedAt: number, apiTimeLastUpdateUtc: string|null}>}
  */
 async function fetchFromFallback() {
   const res = await fetch(FALLBACK_API_URL, { cache: "no-store" });
@@ -39,26 +39,26 @@ async function fetchFromFallback() {
   }
 
   return {
-    rate: data.rates.EUR,
+    rates: data.rates,
     fetchedAt: Date.now(),
-    apiTimeLastUpdateUtc: data.date ?? null
+    apiTimeLastUpdateUtc: data.date ?? null,
   };
 }
 
 /**
- * Returns a cached CAD→EUR rate if it is less than 24 hours old,
- * otherwise fetches a fresh rate (primary API → fallback API → stale cache).
- * @returns {Promise<{rate: number, fetchedAt: number, apiTimeLastUpdateUtc: string|null}>}
+ * Returns a cached rates object if it is less than 24 hours old,
+ * otherwise fetches fresh rates (primary API → fallback API → stale cache).
+ * @returns {Promise<{rates: Object, fetchedAt: number, apiTimeLastUpdateUtc: string|null}>}
  */
-async function getCachedOrFreshRate() {
+async function getCachedOrFreshRates() {
   const { [STORAGE_KEY]: cache } = await chrome.storage.local.get(STORAGE_KEY);
 
-  if (cache?.rate && cache?.fetchedAt && (Date.now() - cache.fetchedAt) < TTL_MS) {
+  if (cache?.rates && cache?.fetchedAt && (Date.now() - cache.fetchedAt) < TTL_MS) {
     return cache;
   }
 
   try {
-    const fresh = await fetchCadToEurRate();
+    const fresh = await fetchCadRates();
     await chrome.storage.local.set({ [STORAGE_KEY]: fresh });
     return fresh;
   } catch {
@@ -68,17 +68,22 @@ async function getCachedOrFreshRate() {
       return fresh;
     } catch {
       // Fail-open: serve stale cache if it exists at all, rather than breaking conversion
-      if (cache?.rate) return cache;
+      if (cache?.rates) return cache;
       throw new Error("All rate sources failed and no cached rate available");
     }
   }
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type !== "GET_CAD_EUR_RATE") return;
+  if (msg?.type !== "GET_CAD_RATES") return;
 
-  getCachedOrFreshRate()
-    .then((cache) => sendResponse({ ok: true, ...cache }))
+  getCachedOrFreshRates()
+    .then((cache) => sendResponse({
+      ok: true,
+      rates: cache.rates,
+      fetchedAt: cache.fetchedAt,
+      apiTimeLastUpdateUtc: cache.apiTimeLastUpdateUtc,
+    }))
     .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
 
   return true; // keep message channel open for async sendResponse

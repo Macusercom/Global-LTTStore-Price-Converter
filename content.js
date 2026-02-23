@@ -1,33 +1,40 @@
 const VAT_KEY = "vatPercent";
 const VAT_DEFAULT_PERCENT = 20;
 
-// VAT_MULTIPLIER_CHECKOUT stays 1.00 (checkout = conversion only, no VAT added here;
-// VAT will be collected by the buyer's country at import / by Shopify during checkout).
-const VAT_MULTIPLIER_CHECKOUT = 1.00;
+// On checkout pages all prices are converted straight (CAD × rate) with no VAT
+// multiplier.  VAT / taxes are already shown as a separate line by Shopify, so
+// adding them again would double-count them.
 
 const SUFFIX_CLASS = "kesch-eur-suffix";
-// Matches "(€ 12,34)" already appended by older versions (tolerates spacing).
-const EUR_SUFFIX_RE = /\s*\(\s*€\s*[\d.,]+?\s*\)\s*$/;
+// Matches any currency suffix "(€ 12,34)" / "(£12.34)" appended by this extension.
+const SUFFIX_RE = /\s*\([^)]{1,40}\)\s*$/;
+
+const TARGET_CURRENCY_KEY     = "targetCurrency";
+const TARGET_CURRENCY_DEFAULT = "EUR";
+const INCLUDE_VAT_KEY         = "includeVat";
+
+// Dollar-symbol currencies: use currency code in display to avoid confusion
+// with the source CAD "$" already shown on the store pages.
+const DOLLAR_CURRENCY_CODES = new Set(["USD", "AUD", "NZD", "SGD", "HKD", "MXN"]);
 
 // ── Named constants ───────────────────────────────────────────────────────────
-const DEBOUNCE_DELAY_MS       = 200;  // wait for DOM to settle before re-scanning
-const CHECKOUT_RETRY_DELAY_MS = 600;  // extra wait for Shopify to inject the tax row
-const CHECKOUT_MAX_RETRIES    = 3;    // max re-scans before accepting missing tax data
+const DEBOUNCE_DELAY_MS = 200;  // wait for DOM to settle before re-scanning
 
-const EUR_FORMATTER = new Intl.NumberFormat("de-DE", {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
-
-function formatEur(value) {
-  return `€ ${EUR_FORMATTER.format(value)}`;
+function formatCurrency(value, currency) {
+  const currencyDisplay = DOLLAR_CURRENCY_CODES.has(currency) ? "code" : "narrowSymbol";
+  return new Intl.NumberFormat("en", {
+    style: "currency",
+    currency,
+    currencyDisplay,
+  }).format(value);
 }
 
 // ── Dynamic VAT ───────────────────────────────────────────────────────────────
 // Reads the user-configured VAT percentage from storage and returns it as a
 // multiplier (e.g. 20% → 1.20). Falls back to 20% if nothing is stored yet.
 async function getVatMultiplier() {
-  const data = await chrome.storage.local.get(VAT_KEY);
+  const data = await chrome.storage.local.get([VAT_KEY, INCLUDE_VAT_KEY]);
+  if (data[INCLUDE_VAT_KEY] === false) return 1;
   const pct = typeof data[VAT_KEY] === "number" ? data[VAT_KEY] : VAT_DEFAULT_PERCENT;
   return 1 + pct / 100;
 }
@@ -95,18 +102,25 @@ function parseAmountFromDollarText(text) {
   return Number.isFinite(val) ? val : null;
 }
 
+async function getTargetCurrency() {
+  const data = await chrome.storage.local.get(TARGET_CURRENCY_KEY);
+  return typeof data[TARGET_CURRENCY_KEY] === "string"
+    ? data[TARGET_CURRENCY_KEY]
+    : TARGET_CURRENCY_DEFAULT;
+}
+
 // ── Background communication ──────────────────────────────────────────────────
-async function getRateFromBackground() {
-  const resp = await chrome.runtime.sendMessage({ type: "GET_CAD_EUR_RATE" });
-  if (!resp?.ok) throw new Error(resp?.error || "Rate unavailable");
-  return resp.rate;
+async function getRatesFromBackground() {
+  const resp = await chrome.runtime.sendMessage({ type: "GET_CAD_RATES" });
+  if (!resp?.ok) throw new Error(resp?.error || "Rates unavailable");
+  return resp.rates;  // full { EUR: 0.728, GBP: 0.621, … } object
 }
 
 // ── DOM helpers ───────────────────────────────────────────────────────────────
 function upsertSuffixInside(el, suffixText) {
   if (el.childElementCount === 0) {
     const raw  = (el.textContent || "");
-    const base = raw.replace(EUR_SUFFIX_RE, "");
+    const base = raw.replace(SUFFIX_RE, "");
     if (raw !== base) el.textContent = base;
   }
 
@@ -115,9 +129,12 @@ function upsertSuffixInside(el, suffixText) {
     s = document.createElement("span");
     s.className = SUFFIX_CLASS;
     s.style.whiteSpace = "nowrap";
+    s.style.verticalAlign = "baseline";
     el.appendChild(s);
   }
-  s.textContent = suffixText;
+  // Guard: only write if the text actually changed to avoid triggering
+  // the MutationObserver on every update cycle (would cause infinite loop).
+  if (s.textContent !== suffixText) s.textContent = suffixText;
 }
 
 function clearSuffixInside(el) {
@@ -126,14 +143,15 @@ function clearSuffixInside(el) {
 
 // ── Loading indicator ─────────────────────────────────────────────────────────
 let loadingIndicator = null;
-const LOADING_CLASS  = "kesch-loading-indicator";
+const LOADING_CLASS    = "kesch-loading-indicator";
+const TAX_NOTICE_CLASS = "kesch-tax-notice";
 
 function showLoadingIndicator() {
   if (loadingIndicator) return;
   if (!document.getElementById("kesch-style")) {
     const style = document.createElement("style");
     style.id = "kesch-style";
-    style.textContent = `.${LOADING_CLASS}{position:fixed;bottom:12px;right:12px;background:rgba(79,138,255,.85);color:#fff;font-size:11px;padding:4px 10px;border-radius:12px;z-index:999999;pointer-events:none;font-family:monospace}`;
+    style.textContent = `.${LOADING_CLASS}{position:fixed;bottom:12px;right:12px;background:rgba(255,122,0,.85);color:#fff;font-size:11px;padding:4px 10px;border-radius:12px;z-index:999999;pointer-events:none;font-family:monospace}`;
     document.head?.appendChild(style);
   }
   loadingIndicator = document.createElement("div");
@@ -147,110 +165,67 @@ function hideLoadingIndicator() {
   loadingIndicator = null;
 }
 
+// ── Tax-notice for checkout ────────────────────────────────────────────────────
+// Shopify only shows "Estimated taxes" when the threshold is met. If the row
+// is absent we inject a small note so the user isn't surprised at payment.
+function updateTaxNotice() {
+  const existing    = document.querySelector(`.${TAX_NOTICE_CLASS}`);
+  const rowHeaders  = Array.from(document.querySelectorAll('[role="rowheader"]'));
+
+  // If a tax/duties row already exists, make sure our notice is gone.
+  const hasTaxRow = rowHeaders.some((el) =>
+    /tax|duti|levies|impôt|steuer/i.test(el.textContent)
+  );
+  if (hasTaxRow) { existing?.remove(); return; }
+  if (existing)  return; // already showing
+
+  // Find the Total row and insert the notice after it.
+  const totalHeader = rowHeaders.find((el) => /\btotal\b/i.test(el.textContent.trim()));
+  if (!totalHeader) return;
+  const totalRow = totalHeader.closest('[role="row"]');
+  if (!totalRow) return;
+
+  const notice = document.createElement("p");
+  notice.className = TAX_NOTICE_CLASS;
+  notice.textContent = "Taxes not included — additional taxes may apply.";
+  notice.style.cssText =
+    "font-size:11px;opacity:0.55;text-align:right;padding:6px 0 0;margin:0;font-family:inherit";
+  totalRow.insertAdjacentElement("afterend", notice);
+}
+
 // ── Converters ────────────────────────────────────────────────────────────────
-function convertStorePriceItem(el, rate, vatMultiplier) {
+function convertStorePriceItem(el, rate, vatMultiplier, currency) {
   const raw = (el.textContent || "").trim();
   if (!raw.includes("CAD") || !raw.includes("$")) return;
 
-  const base = raw.replace(EUR_SUFFIX_RE, "").trim();
+  const base = raw.replace(SUFFIX_RE, "").trim();
   const cad  = parseAmountFromDollarText(base);
   if (cad === null) return;
 
-  const eurGross = cad * rate * vatMultiplier;
-  const next     = `${base} (${formatEur(eurGross)})`;
+  const next = `${base} (${formatCurrency(cad * rate * vatMultiplier, currency)})`;
   if (raw !== next) el.textContent = next;
 }
 
-function convertCartPrice(el, rate, vatMultiplier) {
+function convertCartPrice(el, rate, vatMultiplier, currency) {
   const raw = (el.textContent || "").trim();
   if (!raw.includes("$")) { clearSuffixInside(el); return; }
 
   const cad = parseAmountFromDollarText(raw);
   if (cad === null) return;
 
-  const eurGross = cad * rate * vatMultiplier;
-  upsertSuffixInside(el, ` (${formatEur(eurGross)})`);
+  upsertSuffixInside(el, ` (${formatCurrency(cad * rate * vatMultiplier, currency)})`);
 }
 
-function isEstimatedTaxesRow(el) {
-  // Intentionally exclude bare 'div': .closest("div") always matches and
-  // its textContent can span the whole page.
-  const row = el.closest("[role='row'], tr, li");
-  const t   = (row?.textContent || "").toLowerCase();
-  return (t.includes("tax") || t.includes("steuern") || t.includes("steuer"))
-    && !t.includes("total");
-}
-
-/**
- * Scans the Shopify checkout DOM for the grand total element and any estimated
- * tax rows. The tax amount is subtracted before converting because VAT will be
- * collected by the buyer's country at import (not applied here).
- * @param {Document|Element} root
- * @returns {{ totalNode: Element|null, totalVal: number|null, taxVal: number|null }}
- */
-function findCheckoutTotalsAndTaxes(root) {
-  // Only query inline/leaf nodes – block containers like <div> accumulate all
-  // child text in textContent, making substring checks unreliable.
-  const allDollarNodes = Array.from(root.querySelectorAll("strong, span"))
-    .filter((n) => (n.textContent || "").includes("$"));
-
-  let totalNode = null;
-  let totalVal  = null;
-
-  for (const n of allDollarNodes) {
-    const row = n.closest("[role='row'], tr, li");
-    if (!row) continue;
-    const rowText = (row.textContent || "").toLowerCase();
-    if (rowText.includes("total") && !rowText.includes("subtotal")) {
-      const v = parseAmountFromDollarText(n.textContent || "");
-      if (typeof v === "number" && (totalVal === null || v > totalVal)) {
-        totalNode = n;
-        totalVal  = v;
-      }
-    }
-  }
-
-  // Fallback: highest <strong> value (flat-HTML checkouts)
-  if (!totalNode) {
-    const parsed = allDollarNodes
-      .filter((n) => n.tagName === "STRONG")
-      .map((n) => ({ n, v: parseAmountFromDollarText(n.textContent || "") }))
-      .filter((x) => typeof x.v === "number");
-    if (parsed.length) {
-      parsed.sort((a, b) => b.v - a.v);
-      totalNode = parsed[0].n;
-      totalVal  = parsed[0].v;
-    }
-  }
-
-  const taxCandidates = Array.from(root.querySelectorAll("span, strong"))
-    .filter((n) => (n.textContent || "").includes("$") && isEstimatedTaxesRow(n))
-    .map((n) => parseAmountFromDollarText(n.textContent || ""))
-    .filter((v) => typeof v === "number");
-
-  return {
-    totalNode,
-    totalVal,
-    taxVal: taxCandidates.length ? Math.max(...taxCandidates) : null,
-  };
-}
-
-function convertCheckout(el, rate, ctx) {
+function convertCheckout(el, rate, currency) {
   const raw = (el.textContent || "").trim();
   if (!raw.includes("$")) { clearSuffixInside(el); return; }
-  if (isEstimatedTaxesRow(el)) { clearSuffixInside(el); return; }
 
   const cad = parseAmountFromDollarText(raw);
   if (cad === null) return;
 
-  if (ctx?.totalNode && el === ctx.totalNode
-      && typeof ctx.totalVal === "number" && typeof ctx.taxVal === "number") {
-    const netCad = Math.max(0, ctx.totalVal - ctx.taxVal);
-    upsertSuffixInside(el, ` (${formatEur(netCad * rate * VAT_MULTIPLIER_CHECKOUT)})`);
-    return;
-  }
-
-  upsertSuffixInside(el, ` (${formatEur(cad * rate * VAT_MULTIPLIER_CHECKOUT)})`);
+  // Straight CAD→local currency; no VAT added — taxes are already shown as a
+  // separate line by Shopify, so adding VAT here would double-count them.
+  upsertSuffixInside(el, ` (${formatCurrency(cad * rate, currency)})`);
 }
 
 // ── Target finding ────────────────────────────────────────────────────────────
@@ -321,10 +296,9 @@ function findTargets(kind, root = document) {
 }
 
 // ── Main update loop ──────────────────────────────────────────────────────────
-let scheduled      = false;
-let running        = false;
-let pendingUpdate  = false;
-let checkoutRetryCount = 0;
+let scheduled     = false;
+let running       = false;
+let pendingUpdate = false;
 
 async function updateAll() {
   if (!isLikelyLttContext()) return;
@@ -339,30 +313,25 @@ async function updateAll() {
   showLoadingIndicator();
 
   try {
-    // Fetch rate and VAT multiplier in parallel
-    const [rate, vatMultiplier] = await Promise.all([
-      getRateFromBackground(),
+    // Fetch rates, VAT multiplier, and target currency in parallel
+    const [rates, vatMultiplier, currency] = await Promise.all([
+      getRatesFromBackground(),
       getVatMultiplier(),
+      getTargetCurrency(),
     ]);
+
+    const rate = rates[currency];
+    if (typeof rate !== "number") throw new Error(`No rate available for ${currency}`);
 
     const targets = findTargets(kind);
 
     if (kind === "store") {
-      targets.forEach((n) => convertStorePriceItem(n, rate, vatMultiplier));
+      targets.forEach((n) => convertStorePriceItem(n, rate, vatMultiplier, currency));
     } else if (kind === "cart") {
-      targets.forEach((n) => convertCartPrice(n, rate, vatMultiplier));
+      targets.forEach((n) => convertCartPrice(n, rate, vatMultiplier, currency));
     } else if (kind === "checkout") {
-      const ctx = findCheckoutTotalsAndTaxes(document);
-
-      // If Shopify hasn't injected the tax row yet, wait and retry rather than
-      // writing a wrong suffix (the race condition documented in the README).
-      if (ctx.totalNode && ctx.taxVal === null && checkoutRetryCount < CHECKOUT_MAX_RETRIES) {
-        checkoutRetryCount++;
-        setTimeout(() => { scheduled = false; updateAll(); }, CHECKOUT_RETRY_DELAY_MS);
-        return;
-      }
-      checkoutRetryCount = 0;
-      targets.forEach((n) => convertCheckout(n, rate, ctx));
+      targets.forEach((n) => convertCheckout(n, rate, currency));
+      updateTaxNotice();
     }
   } catch (err) {
     console.debug("[LTTStore EUR]", err);
@@ -388,35 +357,52 @@ chrome.runtime.onMessage.addListener((msg) => {
 scheduleUpdate();
 
 // Observe the most specific stable ancestor available; fall back to documentElement.
-// characterData is only needed on store pages (text nodes); cart/checkout use childList.
 function attachObserver() {
   const kind = pageKind();
-  const target = (
-    document.querySelector("main") ||
-    document.querySelector("#MainContent") ||
-    document.body ||
-    document.documentElement
-  );
+  // Always observe document.body (not just <main>) so mutations anywhere in
+  // the page layout are caught — on the Shopify checkout the order-summary
+  // sidebar lives outside <main>, so narrowing to <main> causes us to miss
+  // every price update triggered by a country / shipping change.
+  const target = document.body || document.documentElement;
   obs.observe(target, {
     subtree:       true,
     childList:     true,
-    characterData: kind === "store",
+    // Enable characterData on all relevant pages: Shopify/React updates price
+    // text nodes in-place (textNode.nodeValue change = characterData mutation).
+    characterData: kind !== "other",
   });
 }
 
 const obs = new MutationObserver((mutations) => {
-  // Ignore mutations caused by our own loading indicator to avoid re-triggering.
-  const selfMutation = mutations.every((m) =>
-    m.target === loadingIndicator ||
-    (m.target instanceof Element && m.target.classList.contains(LOADING_CLASS))
-  );
+  // Ignore mutations caused by our own injected nodes so we don't re-trigger
+  // ourselves in an infinite loop.
+  const selfMutation = mutations.every((m) => {
+    // Loading indicator
+    if (m.target === loadingIndicator ||
+        (m.target instanceof Element && m.target.classList.contains(LOADING_CLASS))) return true;
+    // Suffix span itself had a child added/removed (e.g. first textContent set)
+    if (m.target instanceof Element && m.target.classList.contains(SUFFIX_CLASS)) return true;
+    // Text node inside a suffix span changed value (characterData mutation)
+    if (m.type === "characterData" &&
+        m.target.parentElement?.classList.contains(SUFFIX_CLASS)) return true;
+    // childList: the only added/removed nodes are our own suffix/loading spans
+    if (m.type === "childList") {
+      const nodes = [...m.addedNodes, ...m.removedNodes];
+      if (nodes.length > 0 && nodes.every((n) =>
+        n instanceof Element &&
+        (n.classList.contains(SUFFIX_CLASS) ||
+         n.classList.contains(LOADING_CLASS) ||
+         n.classList.contains(TAX_NOTICE_CLASS))
+      )) return true;
+    }
+    return false;
+  });
   if (selfMutation) return;
   scheduleUpdate();
 });
 
 attachObserver();
 window.addEventListener("popstate", () => {
-  checkoutRetryCount = 0;
   scheduleUpdate();
 });
 

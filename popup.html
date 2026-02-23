@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LTTStore EUR</title>
+  <title>LTTStore Price Converter</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap');
 
@@ -13,8 +13,9 @@
       --bg:        #0f1117;
       --surface:   #181c27;
       --border:    #262d3f;
-      --accent:    #4f8aff;
-      --accent-dim:#2a4a8a;
+      --accent:    #ff7a00;
+      --accent-hover:#ff9c00;
+      --accent-dim:#7a3a00;
       --success:   #34d399;
       --muted:     #4a5168;
       --text:      #e2e8f0;
@@ -117,7 +118,7 @@
       padding: 0;
       line-height: 1;
     }
-    button#refreshRate:hover  { color: var(--accent); border-color: var(--accent); }
+    button#refreshRate:hover  { color: var(--accent-hover); border-color: var(--accent-hover); }
     button#refreshRate:disabled { opacity: 0.4; cursor: default; }
 
     /* ── VAT section ── */
@@ -131,7 +132,8 @@
     }
 
     /* ── Country select ── */
-    select#countrySelect {
+    select#countrySelect,
+    select#currencySelect {
       width: 100%;
       background: var(--surface);
       border: 1px solid var(--border);
@@ -151,8 +153,15 @@
       margin-bottom: 8px;
       transition: border-color 0.15s;
     }
-    select#countrySelect:focus { border-color: var(--accent); }
-    select#countrySelect option { background: #1a1f30; }
+    select#countrySelect:focus,
+    select#currencySelect:focus { border-color: var(--accent-hover); }
+    select#countrySelect option,
+    select#currencySelect option { background: #1a1f30; }
+
+    select#currencySelect:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
 
     .input-row {
       display: flex;
@@ -183,8 +192,8 @@
     input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
 
     input[type="number"]:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(79,138,255,0.15);
+      border-color: var(--accent-hover);
+      box-shadow: 0 0 0 3px rgba(255,156,0,0.15);
     }
 
     .input-unit {
@@ -212,7 +221,7 @@
       white-space: nowrap;
       letter-spacing: 0.3px;
     }
-    button#save:hover  { background: #6a9eff; }
+    button#save:hover  { background: var(--accent-hover); }
     button#save:active { transform: scale(0.97); }
     button#save:disabled { background: var(--accent-dim); cursor: default; }
 
@@ -264,6 +273,67 @@
       transform: translateX(-50%) translateY(0);
     }
 
+    /* ── VAT toggle ── */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .toggle {
+      position: relative;
+      display: inline-block;
+      width: 30px; height: 17px;
+      flex-shrink: 0;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .toggle-track {
+      position: absolute;
+      inset: 0;
+      background: var(--border);
+      border-radius: 17px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .toggle input:checked + .toggle-track { background: var(--accent); }
+    .toggle-track::after {
+      content: '';
+      position: absolute;
+      left: 2px; top: 2px;
+      width: 13px; height: 13px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    .toggle input:checked + .toggle-track::after { transform: translateX(13px); }
+    .toggle-label {
+      font-size: 11px;
+      color: var(--text-dim);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    /* ── Setup hint ── */
+    .setup-hint {
+      margin: 0 18px;
+      padding: 8px 12px;
+      background: rgba(255,122,0,0.1);
+      border: 1px solid rgba(255,122,0,0.3);
+      border-radius: 8px;
+      font-size: 11px;
+      color: var(--accent);
+      line-height: 1.4;
+    }
+
+    /* ── Disclaimer ── */
+    .disclaimer {
+      padding: 8px 18px 12px;
+      font-size: 10px;
+      color: var(--muted);
+      line-height: 1.5;
+      border-top: 1px solid var(--border);
+    }
+
     /* ── Footer ── */
     footer {
       padding: 10px 18px 14px;
@@ -281,7 +351,7 @@
   <header>
     <div class="logo">€$</div>
     <div class="header-text">
-      <div class="header-title">LTTStore EUR Converter</div>
+      <div class="header-title">Global LTTStore Price Converter</div>
       <div class="header-sub">global.lttstore.com</div>
     </div>
   </header>
@@ -289,23 +359,36 @@
   <main>
     <!-- Live rate -->
     <div class="rate-row">
-      <span class="rate-label">CAD → EUR Rate</span>
+      <span class="rate-label">CAD → <span id="rateCurrencyLabel">EUR</span></span>
       <div class="rate-right">
         <span class="rate-value loading" id="rateDisplay">loading…</span>
         <button id="refreshRate" title="Refresh rate now">↻</button>
       </div>
     </div>
 
+    <!-- First-install hint (hidden after first save) -->
+    <div class="setup-hint" id="setupHint" hidden>
+      Select your country below — or choose Custom and set your VAT rate and currency manually, then hit Save.
+    </div>
+
     <!-- VAT input -->
     <div>
       <div class="section-label">VAT / Sales Tax (Store &amp; Cart)</div>
       <select id="countrySelect"></select>
+      <select id="currencySelect"></select>
       <div class="input-row">
         <div class="input-wrap">
           <input type="number" id="vatInput" min="0" max="100" step="0.1" placeholder="20" />
           <span class="input-unit">%</span>
         </div>
         <button id="save">Save</button>
+      </div>
+      <div class="toggle-row">
+        <label class="toggle">
+          <input type="checkbox" id="includeVatToggle" checked />
+          <span class="toggle-track"></span>
+        </label>
+        <label class="toggle-label" for="includeVatToggle">Include VAT in store &amp; cart prices</label>
       </div>
     </div>
 
@@ -319,6 +402,10 @@
       </span>
     </div>
   </main>
+
+  <div class="disclaimer">
+    Rates &amp; VAT are for reference only. Conversion results may be inaccurate. I am not responsible for any discrepancies.
+  </div>
 
   <footer>
     <span>Checkout: no VAT applied</span>
