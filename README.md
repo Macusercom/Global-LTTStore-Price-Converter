@@ -41,3 +41,5 @@ Since LTTStore.com is split between global and US the plug-in did not work anymo
 ![Screenshot](images/image3.jpeg)
 
 ![Screenshot](images/image4.jpeg)
+
+![Screenshot](images/image6.jpeg)
