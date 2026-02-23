@@ -3,12 +3,9 @@ A small Chrome Extension checking the currency conversion from CAD to EUR and ad
 
 
 ## Information
-This extension pulls the CAD/EUR conversion rate once a day and adds it in brackets to the CAD pricing with VAT included. The price with VAT also is added to the cart.
+This extension pulls the CAD conversion rates once a day and adds it in brackets to the CAD pricing with or without VAT included.
 
-During checkout, it will NOT add the VAT but only convert the net price from CAD to EUR as "Added Taxes" is extra due to the VAT being applied to shipping cost. To not make it confusing, it will not add VAT there.
-
-## Bugs
-Depending on how fast the checkout loads, the total price conversion sometimes is wrong there. Product pages and cart are fine though.
+During checkout, it will NOT add the VAT but only convert the net price as "Added Taxes" is extra due to the VAT being applied to shipping cost. To not make it confusing, it will not add VAT there. However, if the total amount exceeds the threshold for "estimated taxes" (e. g. € 150), it will show you a notice that LTTStore.com won't collect the taxes in advance.
 
 ## How To Install (Chrome)
 
