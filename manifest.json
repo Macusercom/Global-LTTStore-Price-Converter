@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Global LTTStore Price Converter",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Adds EUR price next to CAD prices on global.lttstore.com product, cart, and checkout pages using live rates from open.er-api.com. VAT rate is configurable via the extension popup.",
   "permissions": [
     "storage",
