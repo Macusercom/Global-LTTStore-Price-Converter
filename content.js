@@ -168,7 +168,8 @@ function hideLoadingIndicator() {
 // ── Tax-notice for checkout ────────────────────────────────────────────────────
 // Shopify only shows "Estimated taxes" when the threshold is met. If the row
 // is absent we inject a small note so the user isn't surprised at payment.
-function updateTaxNotice() {
+// When rate/vatMultiplier/currency are provided, a VAT estimate is appended.
+function updateTaxNotice(rate, vatMultiplier, currency) {
   const existing    = document.querySelector(`.${TAX_NOTICE_CLASS}`);
   const rowHeaders  = Array.from(document.querySelectorAll('[role="rowheader"]'));
 
@@ -177,7 +178,6 @@ function updateTaxNotice() {
     /tax|duti|levies|impôt|steuer/i.test(el.textContent)
   );
   if (hasTaxRow) { existing?.remove(); return; }
-  if (existing)  return; // already showing
 
   // Find the Total row and insert the notice after it.
   const totalHeader = rowHeaders.find((el) => /\btotal\b/i.test(el.textContent.trim()));
@@ -185,11 +185,33 @@ function updateTaxNotice() {
   const totalRow = totalHeader.closest('[role="row"]');
   if (!totalRow) return;
 
+  // Build an estimated VAT line when VAT is enabled and we have a rate.
+  let vatLine = "";
+  if (rate && vatMultiplier > 1 && currency) {
+    const priceCell = totalRow.querySelector('[role="cell"]');
+    const cadAmount = priceCell ? parseAmountFromDollarText(priceCell.textContent || "") : null;
+    if (cadAmount !== null) {
+      const localAmount  = cadAmount * rate;
+      const vatPct       = Math.round((vatMultiplier - 1) * 1000) / 10; // e.g. 20 or 8.1
+      const vatAmount    = localAmount * (vatPct / 100);
+      const totalWithVat = localAmount + vatAmount;
+      vatLine = `est. ~${vatPct}% VAT: ${formatCurrency(vatAmount, currency)} · total incl. taxes: ${formatCurrency(totalWithVat, currency)}`;
+    }
+  }
+
+  const noticeText = `No taxes collected by LTTStore for this order.${vatLine ? `\n${vatLine}` : ""}`;
+
+  if (existing) {
+    // Update text if it changed (avoids triggering the MutationObserver loop).
+    if (existing.textContent !== noticeText) existing.textContent = noticeText;
+    return;
+  }
+
   const notice = document.createElement("p");
   notice.className = TAX_NOTICE_CLASS;
-  notice.textContent = "Taxes not included — additional taxes may apply.";
+  notice.textContent = noticeText;
   notice.style.cssText =
-    "font-size:11px;opacity:0.55;text-align:right;padding:6px 0 0;margin:0;font-family:inherit";
+    "font-size:11px;opacity:0.55;text-align:right;padding:6px 0 0;margin:0;font-family:inherit;white-space:pre-line";
   totalRow.insertAdjacentElement("afterend", notice);
 }
 
@@ -331,7 +353,7 @@ async function updateAll() {
       targets.forEach((n) => convertCartPrice(n, rate, vatMultiplier, currency));
     } else if (kind === "checkout") {
       targets.forEach((n) => convertCheckout(n, rate, currency));
-      updateTaxNotice();
+      updateTaxNotice(rate, vatMultiplier, currency);
     }
   } catch (err) {
     console.debug("[LTTStore EUR]", err);
@@ -382,9 +404,10 @@ const obs = new MutationObserver((mutations) => {
         (m.target instanceof Element && m.target.classList.contains(LOADING_CLASS))) return true;
     // Suffix span itself had a child added/removed (e.g. first textContent set)
     if (m.target instanceof Element && m.target.classList.contains(SUFFIX_CLASS)) return true;
-    // Text node inside a suffix span changed value (characterData mutation)
+    // Text node inside a suffix span or tax-notice changed value (characterData mutation)
     if (m.type === "characterData" &&
-        m.target.parentElement?.classList.contains(SUFFIX_CLASS)) return true;
+        (m.target.parentElement?.classList.contains(SUFFIX_CLASS) ||
+         m.target.parentElement?.classList.contains(TAX_NOTICE_CLASS))) return true;
     // childList: the only added/removed nodes are our own suffix/loading spans
     if (m.type === "childList") {
       const nodes = [...m.addedNodes, ...m.removedNodes];
