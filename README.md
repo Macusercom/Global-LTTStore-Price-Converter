@@ -1,4 +1,4 @@
-# Global-LTTStore.com-EU-Price
+# Global LTTStore Price Converter
 A small Chrome Extension checking the currency conversion from CAD to EUR and adding VAT to the global LTTStore.com price created with ChatGPT, Claude and vibe coding.
 
 
