@@ -202,7 +202,7 @@ function updateTaxNotice(rate, vatPct, currency) {
       const localAmount  = cadAmount * rate;
       const vatAmount    = localAmount * (vatPct / 100);
       const totalWithVat = localAmount + vatAmount;
-      vatLine = `est. ~${vatPct}% VAT: ${formatCurrency(vatAmount, currency)} · total incl. taxes: ${formatCurrency(totalWithVat, currency)}`;
+      vatLine = `est. ${vatPct}% VAT: ~ ${formatCurrency(vatAmount, currency)} · total incl. taxes: ~ ${formatCurrency(totalWithVat, currency)}`;
     }
   }
 
@@ -218,7 +218,7 @@ function updateTaxNotice(rate, vatPct, currency) {
   notice.className = TAX_NOTICE_CLASS;
   notice.textContent = noticeText;
   notice.style.cssText =
-    "font-size:11px;opacity:0.55;text-align:right;padding:6px 0 0;margin:0;font-family:inherit;white-space:pre-line";
+    "font-size:11px;opacity:0.55;text-align:right;padding:6px 0 0;margin:0;font-family:inherit;white-space:pre-line;font-style:italic";
   totalRow.insertAdjacentElement("afterend", notice);
 }
 
@@ -231,7 +231,7 @@ function convertStorePriceItem(el, rate, vatMultiplier, currency) {
   const cad  = parseAmountFromDollarText(base);
   if (cad === null) return;
 
-  const next = `${base} (${formatCurrency(cad * rate * vatMultiplier, currency)})`;
+  const next = `${base} (~ ${formatCurrency(cad * rate * vatMultiplier, currency)})`;
   if (raw !== next) el.textContent = next;
 }
 
@@ -242,7 +242,7 @@ function convertCartPrice(el, rate, vatMultiplier, currency) {
   const cad = parseAmountFromDollarText(raw);
   if (cad === null) return;
 
-  upsertSuffixInside(el, ` (${formatCurrency(cad * rate * vatMultiplier, currency)})`);
+  upsertSuffixInside(el, ` (~ ${formatCurrency(cad * rate * vatMultiplier, currency)})`);
 }
 
 function convertCheckout(el, rate, currency) {
@@ -254,7 +254,10 @@ function convertCheckout(el, rate, currency) {
 
   // Straight CAD→local currency; no VAT added — taxes are already shown as a
   // separate line by Shopify, so adding VAT here would double-count them.
-  upsertSuffixInside(el, ` (${formatCurrency(cad * rate, currency)})`);
+  upsertSuffixInside(el, ` (~ ${formatCurrency(cad * rate, currency)})`);
+
+  const suffix = el.querySelector(`:scope > span.${SUFFIX_CLASS}`);
+  if (suffix) suffix.style.opacity = "0.55";
 }
 
 // ── Target finding ────────────────────────────────────────────────────────────
