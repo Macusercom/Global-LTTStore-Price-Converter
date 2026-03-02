@@ -364,7 +364,7 @@ async function updateAll() {
       targets.forEach((n) => convertCartPrice(n, rate, vatMultiplier, currency));
     } else if (kind === "checkout") {
       targets.forEach((n) => convertCheckout(n, rate, currency));
-      updateTaxNotice(rate, vatPct, currency);
+      if (pageLoaded) updateTaxNotice(rate, vatPct, currency);
     }
   } catch (err) {
     console.debug("[LTTStore EUR]", err);
@@ -388,6 +388,14 @@ chrome.runtime.onMessage.addListener((msg) => {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 scheduleUpdate();
+
+// ── Page-load gate for tax notice ─────────────────────────────────────────────
+// Prevents the notice from flashing during initial load before Shopify has had
+// time to render tax/duties rows.
+let pageLoaded = document.readyState === "complete";
+if (!pageLoaded) {
+  window.addEventListener("load", () => { pageLoaded = true; scheduleUpdate(); }, { once: true });
+}
 
 // Observe the most specific stable ancestor available; fall back to documentElement.
 function attachObserver() {
