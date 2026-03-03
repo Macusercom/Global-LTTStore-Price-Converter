@@ -262,6 +262,7 @@ async function refreshRate() {
       rateDisplay.textContent = currentRate.toFixed(6);
       rateDisplay.classList.remove("loading");
       cacheAgeEl.textContent = "rate: just now";
+      populateCurrencySelect(resp.rates, currentCurrency);
     } else {
       rateDisplay.textContent = "unavailable";
     }

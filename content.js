@@ -153,7 +153,7 @@ let loadingIndicator = null;
 const LOADING_CLASS    = "kesch-loading-indicator";
 const TAX_NOTICE_CLASS = "kesch-tax-notice";
 
-function showLoadingIndicator() {
+function showLoadingIndicator(currency) {
   if (loadingIndicator) return;
   if (!document.getElementById("kesch-style")) {
     const style = document.createElement("style");
@@ -163,7 +163,15 @@ function showLoadingIndicator() {
   }
   loadingIndicator = document.createElement("div");
   loadingIndicator.className = LOADING_CLASS;
-  loadingIndicator.textContent = "€ …";
+  try {
+    const sym = currency
+      ? new Intl.NumberFormat("en", { style: "currency", currency, currencyDisplay: DOLLAR_CURRENCY_CODES.has(currency) ? "code" : "narrowSymbol" })
+          .formatToParts(0).find((p) => p.type === "currency")?.value ?? currency
+      : "…";
+    loadingIndicator.textContent = `${sym} …`;
+  } catch {
+    loadingIndicator.textContent = "…";
+  }
   document.body?.appendChild(loadingIndicator);
 }
 
@@ -342,14 +350,15 @@ async function updateAll() {
   running       = true;
   pendingUpdate = false;
 
-  showLoadingIndicator();
+  // Read currency first so the loading badge can show the right symbol.
+  const currency = await getTargetCurrency();
+  showLoadingIndicator(currency);
 
   try {
-    // Fetch rates, VAT multiplier, raw VAT %, and target currency in parallel
-    const [rates, vatMultiplier, currency, vatPct] = await Promise.all([
+    // Fetch rates, VAT multiplier, and raw VAT % in parallel (currency already known).
+    const [rates, vatMultiplier, vatPct] = await Promise.all([
       getRatesFromBackground(),
       getVatMultiplier(),
-      getTargetCurrency(),
       getVatPercent(),
     ]);
 
@@ -364,7 +373,7 @@ async function updateAll() {
       targets.forEach((n) => convertCartPrice(n, rate, vatMultiplier, currency));
     } else if (kind === "checkout") {
       targets.forEach((n) => convertCheckout(n, rate, currency));
-      if (pageLoaded) updateTaxNotice(rate, vatPct, currency);
+      if (pageLoaded) scheduleTaxNotice(rate, vatPct, currency);
     }
   } catch (err) {
     console.debug("[LTTStore EUR]", err);
@@ -390,8 +399,18 @@ chrome.runtime.onMessage.addListener((msg) => {
 scheduleUpdate();
 
 // ── Page-load gate for tax notice ─────────────────────────────────────────────
-// Prevents the notice from flashing during initial load before Shopify has had
-// time to render tax/duties rows.
+// Shopify's checkout renders tax/duties rows asynchronously via React even
+// after window.load. We debounce the tax notice separately with a longer
+// settle delay: every updateAll() call resets the timer, so the notice only
+// appears once Shopify's mutations have stopped for TAX_NOTICE_SETTLE_MS.
+const TAX_NOTICE_SETTLE_MS = 500;
+let taxNoticeTimer = null;
+
+function scheduleTaxNotice(rate, vatPct, currency) {
+  clearTimeout(taxNoticeTimer);
+  taxNoticeTimer = setTimeout(() => updateTaxNotice(rate, vatPct, currency), TAX_NOTICE_SETTLE_MS);
+}
+
 let pageLoaded = document.readyState === "complete";
 if (!pageLoaded) {
   window.addEventListener("load", () => { pageLoaded = true; scheduleUpdate(); }, { once: true });

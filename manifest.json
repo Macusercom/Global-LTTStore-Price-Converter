@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Global LTTStore Price Converter",
-  "version": "1.2.2",
-  "description": "Adds EUR price next to CAD prices on global.lttstore.com product, cart, and checkout pages using live rates from open.er-api.com. VAT rate is configurable via the extension popup.",
+  "version": "1.2.3",
+  "description": "Shows local-currency prices next to CAD prices on global.lttstore.com product, cart, and checkout pages, using live rates from open.er-api.com. Currency, VAT rate, and include-VAT toggle are all configurable via the extension popup.",
   "permissions": [
     "storage",
     "tabs"
@@ -24,7 +24,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "LTTStore EUR Settings",
+    "default_title": "LTTStore Price Converter Settings",
     "default_icon": {
       "16":  "icons/icon16.png",
       "48":  "icons/icon48.png",
