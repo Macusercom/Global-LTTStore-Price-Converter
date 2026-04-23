@@ -124,7 +124,7 @@ async function getRatesFromBackground() {
 }
 
 // ── DOM helpers ───────────────────────────────────────────────────────────────
-function upsertSuffixInside(el, suffixText) {
+function upsertSuffixInside(el, suffixText, { block = false } = {}) {
   if (el.childElementCount === 0) {
     const raw  = (el.textContent || "");
     const base = raw.replace(SUFFIX_RE, "");
@@ -138,6 +138,21 @@ function upsertSuffixInside(el, suffixText) {
     s.style.whiteSpace = "nowrap";
     s.style.verticalAlign = "baseline";
     el.appendChild(s);
+  }
+  // block mode: let the suffix wrap to a new line below the base price.
+  // Used in cart totals where the price lives in a tight justify-between
+  // flex row that would otherwise clip the inline suffix.
+  const desiredDisplay = block ? "block" : "";
+  if (s.style.display !== desiredDisplay) s.style.display = desiredDisplay;
+  // When the suffix wraps below, the right column grows taller than the
+  // left "Subtotal/Total" label. The h-stack centers by default, which
+  // makes the label float mid-row; pin it to the top instead so the label
+  // lines up with the first line of the price.
+  if (block) {
+    const parent = el.parentElement;
+    if (parent && parent.style.alignItems !== "flex-start") {
+      parent.style.alignItems = "flex-start";
+    }
   }
   // Guard: only write if the text actually changed to avoid triggering
   // the MutationObserver on every update cycle (would cause infinite loop).
@@ -235,12 +250,13 @@ function convertStorePriceItem(el, rate, vatMultiplier, currency) {
   const raw = (el.textContent || "").trim();
   if (!raw.includes("CAD") || !raw.includes("$")) return;
 
-  const base = raw.replace(SUFFIX_RE, "").trim();
-  const cad  = parseAmountFromDollarText(base);
+  const cad = parseAmountFromDollarText(raw);
   if (cad === null) return;
 
-  const next = `${base} (~ ${formatCurrency(cad * rate * vatMultiplier, currency)})`;
-  if (raw !== next) el.textContent = next;
+  // Use upsertSuffixInside rather than overwriting textContent: the new
+  // <sale-price> / <compare-at-price> wrappers contain an .sr-only child
+  // ("Sale price") that a textContent rewrite would destroy.
+  upsertSuffixInside(el, ` (~ ${formatCurrency(cad * rate * vatMultiplier, currency)})`);
 }
 
 function convertCartPrice(el, rate, vatMultiplier, currency) {
@@ -250,7 +266,11 @@ function convertCartPrice(el, rate, vatMultiplier, currency) {
   const cad = parseAmountFromDollarText(raw);
   if (cad === null) return;
 
-  upsertSuffixInside(el, ` (~ ${formatCurrency(cad * rate * vatMultiplier, currency)})`);
+  // Cart totals (span.h5 / <td>) sit in a tight justify-between flex row,
+  // so the inline suffix gets clipped. Stack it on a new line instead.
+  const tag   = el.tagName;
+  const block = tag === "TD" || (tag === "SPAN" && el.classList.contains("h5"));
+  upsertSuffixInside(el, ` (~ ${formatCurrency(cad * rate * vatMultiplier, currency)})`, { block });
 }
 
 function convertCheckout(el, rate, currency) {
@@ -271,17 +291,32 @@ function convertCheckout(el, rate, currency) {
 // ── Target finding ────────────────────────────────────────────────────────────
 function findTargets(kind, root = document) {
   if (kind === "store") {
-    return Array.from(root.querySelectorAll(".price-item"))
-      .filter((n) => (n.textContent || "").includes("$") && (n.textContent || "").includes("CAD"));
+    const out = new Set();
+    // Current theme: <price-list><sale-price>$X.XX CAD</sale-price></price-list>
+    root.querySelectorAll("price-list sale-price, price-list compare-at-price").forEach((n) => {
+      const t = n.textContent || "";
+      if (t.includes("$") && t.includes("CAD")) out.add(n);
+    });
+    // Legacy fallback for older theme versions.
+    root.querySelectorAll(".price-item").forEach((n) => {
+      const t = n.textContent || "";
+      if (t.includes("$") && t.includes("CAD")) out.add(n);
+    });
+    return Array.from(out);
   }
 
   if (kind === "cart") {
     // Fast path: try known specific selectors first
     const CART_SELECTORS = [
+      // Current theme: custom elements for line-item prices
+      "price-list sale-price",
+      "price-list compare-at-price",
+      // Legacy line-item selectors
       ".price.price--center.th_item_line_price",
       ".price--center.th_item_line_price",
       ".th_item_line_price .price",
       "span.price",
+      // Totals (current + legacy)
       "p.totals__subtotal-value.th_cart_total_price",
       ".totals__subtotal-value",
       ".th_cart_total_price",
@@ -293,13 +328,25 @@ function findTargets(kind, root = document) {
       });
     }
 
+    // Totals in the current theme are plain .h5 spans next to a "Total"/"Subtotal"
+    // label, and the desktop cart table shows a per-line price in a bare <td>.
+    // Match these directly (leaf nodes containing a parseable $ amount) rather
+    // than waiting for the structural fallback, because the line-item selectors
+    // above already produced hits and would suppress the fallback.
+    root.querySelectorAll("span.h5, td").forEach((n) => {
+      if (n.children.length > 0) return;
+      const t = n.textContent || "";
+      if (!t.includes("$")) return;
+      if (parseAmountFromDollarText(t) !== null) out.add(n);
+    });
+
     // Structural fallback: anchor to cart container and scan for price-like leaf nodes.
     // Activates when the LTT Store theme changes and the selector list returns nothing.
     if (out.size === 0) {
       const cartRoot = root.querySelector(
-        'form[action="/cart"], [data-section-type="cart"], #cart, main'
+        'form[action="/cart"], cart-drawer, [data-section-type="cart"], #cart, main'
       ) || root;
-      cartRoot.querySelectorAll("span, p, div").forEach((n) => {
+      cartRoot.querySelectorAll("span, p, div, sale-price, compare-at-price").forEach((n) => {
         const t = n.textContent || "";
         if (!t.includes("$")) return;
         if (n.children.length > 2) return; // skip large container nodes
