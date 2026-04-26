@@ -6,8 +6,11 @@ const VAT_DEFAULT_PERCENT = 20;
 // adding them again would double-count them.
 
 const SUFFIX_CLASS = "kesch-eur-suffix";
-// Matches any currency suffix "(€ 12,34)" / "(£12.34)" appended by this extension.
-const SUFFIX_RE = /\s*\([^)]{1,40}\)\s*$/;
+// Matches the currency suffix "(~ €12,34)" / "(~ -€12,49)" appended by this
+// extension. The leading "~" anchor keeps us from stripping legitimate
+// parentheticals that already exist in the price text — e.g. the checkout
+// discount line "SHIPSTORM DEAL ... (-$ 20,00)".
+const SUFFIX_RE = /\s*\(~[^)]{1,60}\)\s*$/;
 
 const TARGET_CURRENCY_KEY     = "targetCurrency";
 const TARGET_CURRENCY_DEFAULT = "EUR";
@@ -280,9 +283,16 @@ function convertCheckout(el, rate, currency) {
   const cad = parseAmountFromDollarText(raw);
   if (cad === null) return;
 
+  // Discount lines display the amount as "-$ 20,00" (or with a U+2212 minus).
+  // parseAmountFromDollarText only captures digits, so detect a leading minus
+  // immediately before the "$" and carry the sign into the converted output.
+  const normalized = raw.replace(/ /g, " ").replace(/−/g, "-");
+  const isNegative = /-\s*\$/.test(normalized);
+  const localAmount = (isNegative ? -1 : 1) * cad * rate;
+
   // Straight CAD→local currency; no VAT added — taxes are already shown as a
   // separate line by Shopify, so adding VAT here would double-count them.
-  upsertSuffixInside(el, ` (~ ${formatCurrency(cad * rate, currency)})`);
+  upsertSuffixInside(el, ` (~ ${formatCurrency(localAmount, currency)})`);
 
   const suffix = el.querySelector(`:scope > span.${SUFFIX_CLASS}`);
   if (suffix) suffix.style.opacity = "0.55";
@@ -397,6 +407,8 @@ function findTargets(kind, root = document) {
       "strong[translate='no']",
       "[role='cell'] span",
       "[role='cell'] strong",
+      "[role='cell'] p",
+      "[role='cell'] s",
     ];
     const out = new Set();
     for (const sel of selectors) {
@@ -404,9 +416,15 @@ function findTargets(kind, root = document) {
         if ((n.textContent || "").includes("$")) out.add(n);
       });
     }
-    root.querySelectorAll("span, strong").forEach((n) => {
+    // Catch leaf-text price nodes anywhere on the page. <p> and <s> are
+    // included because the current Shopify checkout uses them for the
+    // discount-code line ("SHIPSTORM DEAL ... (-$ 20,00)") and for the
+    // struck-through original price ("$ 39,99") next to a discounted total.
+    root.querySelectorAll("span, strong, p, s").forEach((n) => {
       const t = n.textContent || "";
-      if (t.includes("$") && /[0-9]/.test(t)) out.add(n);
+      if (!t.includes("$") || !/[0-9]/.test(t)) return;
+      if (n.childElementCount > 0) return;
+      out.add(n);
     });
     return Array.from(out);
   }
