@@ -289,6 +289,27 @@ function convertCheckout(el, rate, currency) {
 }
 
 // ── Target finding ────────────────────────────────────────────────────────────
+// Cart-drawer Total + free-shipping bar, which can appear on any store page
+// when the user opens the side drawer. Returns leaf nodes containing a $ amount.
+function findDrawerOverlayTargets(root, out) {
+  root.querySelectorAll("cart-drawer span.h5").forEach((n) => {
+    if (n.children.length > 0) return;
+    const t = n.textContent || "";
+    if (!t.includes("$")) return;
+    if (parseAmountFromDollarText(t) !== null) out.add(n);
+  });
+  // Free-shipping progress bar: "Spend CA$X.XX more and get free shipping!"
+  // Target the inner highlighted price span so the suffix renders inline
+  // right after the amount ("CA$205.01 (~ €X.XX) more …") instead of being
+  // pushed to the end of the sentence.
+  root.querySelectorAll("free-shipping-bar .text-accent").forEach((n) => {
+    if (n.children.length > 0) return;
+    const t = n.textContent || "";
+    if (!t.includes("$")) return;
+    if (parseAmountFromDollarText(t) !== null) out.add(n);
+  });
+}
+
 function findTargets(kind, root = document) {
   if (kind === "store") {
     const out = new Set();
@@ -302,6 +323,8 @@ function findTargets(kind, root = document) {
       const t = n.textContent || "";
       if (t.includes("$") && t.includes("CAD")) out.add(n);
     });
+    // Cart drawer can be opened on any store page; convert its totals too.
+    findDrawerOverlayTargets(root, out);
     return Array.from(out);
   }
 
@@ -334,6 +357,15 @@ function findTargets(kind, root = document) {
     // than waiting for the structural fallback, because the line-item selectors
     // above already produced hits and would suppress the fallback.
     root.querySelectorAll("span.h5, td").forEach((n) => {
+      if (n.children.length > 0) return;
+      const t = n.textContent || "";
+      if (!t.includes("$")) return;
+      if (parseAmountFromDollarText(t) !== null) out.add(n);
+    });
+
+    // "Spend CA$X.XX more and get free shipping!" progress bar — target the
+    // inner price span so the suffix renders inline next to the amount.
+    root.querySelectorAll("free-shipping-bar .text-accent").forEach((n) => {
       if (n.children.length > 0) return;
       const t = n.textContent || "";
       if (!t.includes("$")) return;
@@ -415,7 +447,17 @@ async function updateAll() {
     const targets = findTargets(kind);
 
     if (kind === "store") {
-      targets.forEach((n) => convertStorePriceItem(n, rate, vatMultiplier, currency));
+      targets.forEach((n) => {
+        // Cart drawer overlay elements (Total, free-shipping bar) live inside
+        // <cart-drawer> / <free-shipping-bar> and don't always include "CAD".
+        // Dispatch them through the cart converter so the suffix is appended
+        // regardless of the strict "CAD" check used for store price-list items.
+        if (n.closest("cart-drawer, free-shipping-bar")) {
+          convertCartPrice(n, rate, vatMultiplier, currency);
+        } else {
+          convertStorePriceItem(n, rate, vatMultiplier, currency);
+        }
+      });
     } else if (kind === "cart") {
       targets.forEach((n) => convertCartPrice(n, rate, vatMultiplier, currency));
     } else if (kind === "checkout") {
