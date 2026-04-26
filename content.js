@@ -32,6 +32,23 @@ function formatCurrency(value, currency) {
   }).format(value);
 }
 
+// Checkout-only formatter: matches Shopify's checkout style of
+// "$ 19,99" (symbol, space, comma decimal). Used so the converted
+// suffix reads "(~ € 12,48)" alongside the original "$ 19,99".
+function formatCurrencyCheckout(value, currency) {
+  const isDollar = DOLLAR_CURRENCY_CODES.has(currency);
+  const symbol = isDollar
+    ? currency
+    : new Intl.NumberFormat("en", { style: "currency", currency, currencyDisplay: "narrowSymbol" })
+        .formatToParts(0).find((p) => p.type === "currency")?.value ?? currency;
+  const amount = new Intl.NumberFormat("de-DE", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Math.abs(value));
+  const sign = value < 0 ? "-" : "";
+  return `${sign}${symbol} ${amount}`;
+}
+
 // ── Dynamic VAT ───────────────────────────────────────────────────────────────
 // Reads the user-configured VAT percentage from storage and returns it as a
 // multiplier (e.g. 20% → 1.20). Falls back to 20% if nothing is stored yet.
@@ -228,7 +245,7 @@ function updateTaxNotice(rate, vatPct, currency) {
       const localAmount  = cadAmount * rate;
       const vatAmount    = localAmount * (vatPct / 100);
       const totalWithVat = localAmount + vatAmount;
-      vatLine = `est. ${vatPct}% VAT: ~ ${formatCurrency(vatAmount, currency)} · total incl. taxes: ~ ${formatCurrency(totalWithVat, currency)}`;
+      vatLine = `est. ${vatPct}% VAT: ~ ${formatCurrencyCheckout(vatAmount, currency)} · total incl. taxes: ~ ${formatCurrencyCheckout(totalWithVat, currency)}`;
     }
   }
 
@@ -292,7 +309,7 @@ function convertCheckout(el, rate, currency) {
 
   // Straight CAD→local currency; no VAT added — taxes are already shown as a
   // separate line by Shopify, so adding VAT here would double-count them.
-  upsertSuffixInside(el, ` (~ ${formatCurrency(localAmount, currency)})`);
+  upsertSuffixInside(el, ` (~ ${formatCurrencyCheckout(localAmount, currency)})`);
 
   const suffix = el.querySelector(`:scope > span.${SUFFIX_CLASS}`);
   if (suffix) suffix.style.opacity = "0.55";
