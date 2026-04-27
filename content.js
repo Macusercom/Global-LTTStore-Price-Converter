@@ -286,11 +286,18 @@ function convertCartPrice(el, rate, vatMultiplier, currency) {
   const cad = parseAmountFromDollarText(raw);
   if (cad === null) return;
 
+  // Discount badges display the amount as "(-$40.00)". parseAmountFromDollarText
+  // only captures digits, so detect a leading minus immediately before the "$"
+  // and carry the sign through.
+  const normalized = raw.replace(/ /g, " ").replace(/−/g, "-");
+  const isNegative = /-\s*\$/.test(normalized);
+  const localAmount = (isNegative ? -1 : 1) * cad * rate * vatMultiplier;
+
   // Cart totals (span.h5 / <td>) sit in a tight justify-between flex row,
   // so the inline suffix gets clipped. Stack it on a new line instead.
   const tag   = el.tagName;
   const block = tag === "TD" || (tag === "SPAN" && el.classList.contains("h5"));
-  upsertSuffixInside(el, ` (~ ${formatCurrency(cad * rate * vatMultiplier, currency)})`, { block });
+  upsertSuffixInside(el, ` (~ ${formatCurrency(localAmount, currency)})`, { block });
 }
 
 function convertCheckout(el, rate, currency) {
@@ -350,6 +357,15 @@ function findTargets(kind, root = document) {
       const t = n.textContent || "";
       if (t.includes("$") && t.includes("CAD")) out.add(n);
     });
+    // Sale badges on product/collection cards: "<span class='badge badge--primary'>$19.99 sale</span>".
+    // Leaf nodes containing a $ amount; no "CAD" suffix, so they bypass the
+    // strict price-list selectors above and get routed to convertCartPrice.
+    root.querySelectorAll("span.badge").forEach((n) => {
+      if (n.children.length > 0) return;
+      const t = n.textContent || "";
+      if (!t.includes("$")) return;
+      if (parseAmountFromDollarText(t) !== null) out.add(n);
+    });
     // Cart drawer can be opened on any store page; convert its totals too.
     findDrawerOverlayTargets(root, out);
     return Array.from(out);
@@ -384,6 +400,25 @@ function findTargets(kind, root = document) {
     // than waiting for the structural fallback, because the line-item selectors
     // above already produced hits and would suppress the fallback.
     root.querySelectorAll("span.h5, td").forEach((n) => {
+      if (n.children.length > 0) return;
+      const t = n.textContent || "";
+      if (!t.includes("$")) return;
+      if (parseAmountFromDollarText(t) !== null) out.add(n);
+    });
+
+    // Discount badges on cart line items: "<li class='badge'><svg/>Shipstorm Deal — Pen (-$40.00)</li>".
+    // Has an SVG child element, so it never qualifies as a "leaf" in the generic
+    // span/p/div sweep — match li.badge explicitly. parseAmountFromDollarText
+    // captures the digits and convertCartPrice carries the leading-minus sign.
+    root.querySelectorAll("li.badge").forEach((n) => {
+      const t = n.textContent || "";
+      if (!t.includes("$")) return;
+      if (parseAmountFromDollarText(t) !== null) out.add(n);
+    });
+
+    // Sale badges on cart line items (current theme reuses span.badge--primary
+    // with "$19.99 sale" markup just like the store pages).
+    root.querySelectorAll("span.badge").forEach((n) => {
       if (n.children.length > 0) return;
       const t = n.textContent || "";
       if (!t.includes("$")) return;
@@ -487,7 +522,10 @@ async function updateAll() {
         // <cart-drawer> / <free-shipping-bar> and don't always include "CAD".
         // Dispatch them through the cart converter so the suffix is appended
         // regardless of the strict "CAD" check used for store price-list items.
-        if (n.closest("cart-drawer, free-shipping-bar")) {
+        // Cart-drawer / free-shipping-bar text and sale badges ("$19.99 sale")
+        // don't carry a "CAD" suffix, so route them through the cart converter
+        // — convertStorePriceItem would skip them.
+        if (n.closest("cart-drawer, free-shipping-bar") || n.matches?.("span.badge")) {
           convertCartPrice(n, rate, vatMultiplier, currency);
         } else {
           convertStorePriceItem(n, rate, vatMultiplier, currency);
