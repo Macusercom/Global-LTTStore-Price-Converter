@@ -4,6 +4,7 @@ const COUNTRY_KEY          = "vatCountry";
 const TARGET_CURRENCY_KEY  = "targetCurrency";
 const CONFIGURED_KEY       = "isConfigured";
 const INCLUDE_VAT_KEY      = "includeVat";
+const REPLACE_PRICES_KEY   = "replacePrices";
 const TARGET_CURRENCY_DEFAULT = "EUR";
 const VAT_DEFAULT          = 20;
 const TOAST_DURATION_MS    = 1800;
@@ -63,6 +64,7 @@ const toast             = document.getElementById("toast");
 const countrySelect      = document.getElementById("countrySelect");
 const currencySelect     = document.getElementById("currencySelect");
 const includeVatToggle   = document.getElementById("includeVatToggle");
+const replacePricesToggle = document.getElementById("replacePricesToggle");
 const refreshBtn         = document.getElementById("refreshRate");
 
 function setCurrencySelectEnabled(enabled) {
@@ -106,7 +108,7 @@ COUNTRIES.forEach(({ name, currency, vat }, i) => {
 
 // ── Load saved settings & rate on open ───────────────────────────────────────
 async function init() {
-  const data = await chrome.storage.local.get([VAT_KEY, RATE_KEY, COUNTRY_KEY, TARGET_CURRENCY_KEY, CONFIGURED_KEY, INCLUDE_VAT_KEY]);
+  const data = await chrome.storage.local.get([VAT_KEY, RATE_KEY, COUNTRY_KEY, TARGET_CURRENCY_KEY, CONFIGURED_KEY, INCLUDE_VAT_KEY, REPLACE_PRICES_KEY]);
 
   // First-install detection: no settings saved yet
   const isFirstRun = data[CONFIGURED_KEY] !== true;
@@ -129,6 +131,7 @@ async function init() {
   const savedVat = typeof data[VAT_KEY] === "number" ? data[VAT_KEY] : VAT_DEFAULT;
   vatInput.value = savedVat;
   includeVatToggle.checked = data[INCLUDE_VAT_KEY] !== false; // default true
+  replacePricesToggle.checked = data[REPLACE_PRICES_KEY] === true; // default false
 
   // Rate: try cache first, then ask background
   const cache = data[RATE_KEY];
@@ -293,6 +296,7 @@ saveBtn.addEventListener("click", async () => {
     [COUNTRY_KEY]:        countryIdx,
     [TARGET_CURRENCY_KEY]: currentCurrency,
     [INCLUDE_VAT_KEY]:    includeVatToggle.checked,
+    [REPLACE_PRICES_KEY]: replacePricesToggle.checked,
     [CONFIGURED_KEY]:     true,
   });
 

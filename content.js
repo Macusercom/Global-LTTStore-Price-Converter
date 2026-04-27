@@ -15,6 +15,12 @@ const SUFFIX_RE = /\s*\(~[^)]{1,60}\)\s*$/;
 const TARGET_CURRENCY_KEY     = "targetCurrency";
 const TARGET_CURRENCY_DEFAULT = "EUR";
 const INCLUDE_VAT_KEY         = "includeVat";
+const REPLACE_PRICES_KEY      = "replacePrices";
+
+// Replace mode: the original price text node is wrapped in a span of this
+// class with the original text stashed on `data-orig` so we can re-convert
+// (currency change) or restore (toggle off).
+const REPLACED_CLASS = "kesch-price-replaced";
 
 // Dollar-symbol currencies: use currency code in display to avoid confusion
 // with the source CAD "$" already shown on the store pages.
@@ -64,6 +70,11 @@ async function getVatMultiplier() {
 async function getVatPercent() {
   const data = await chrome.storage.local.get(VAT_KEY);
   return typeof data[VAT_KEY] === "number" ? data[VAT_KEY] : VAT_DEFAULT_PERCENT;
+}
+
+async function getReplacePrices() {
+  const data = await chrome.storage.local.get(REPLACE_PRICES_KEY);
+  return data[REPLACE_PRICES_KEY] === true; // default: bracketed suffix
 }
 
 // ── Page detection ────────────────────────────────────────────────────────────
@@ -183,6 +194,69 @@ function clearSuffixInside(el) {
   el.querySelectorAll(`:scope > span.${SUFFIX_CLASS}`).forEach((n) => n.remove());
 }
 
+// Substitute every "$X.XX" (and "-$X.XX") occurrence in `text` with the
+// converted local-currency value. Leaves surrounding words intact, so
+// "$19.99 sale" → "€14.95 sale" and "Pen (-$40.00)" → "Pen (-€29.96)".
+function convertPriceText(text, rate, vatMultiplier, currency) {
+  return text.replace(
+    /(-?)\s*\$[\s ]*([0-9]+(?:[., ][0-9]+)*)(\s*CAD)?/g,
+    (match, sign) => {
+      const cad = parseAmountFromDollarText(match);
+      if (cad === null) return match;
+      const local = (sign === "-" ? -1 : 1) * cad * rate * vatMultiplier;
+      return formatCurrency(local, currency);
+    },
+  );
+}
+
+// Replace mode: wrap any direct $-bearing text-node child of `el` in a
+// kesch-price-replaced span containing the converted text, with the original
+// stashed on data-orig. On subsequent runs (currency/rate change) the
+// existing wrapper is re-converted from data-orig in place.
+function applyReplacementInside(el, rate, vatMultiplier, currency) {
+  const existing = el.querySelectorAll(`:scope > span.${REPLACED_CLASS}`);
+  if (existing.length) {
+    existing.forEach((span) => {
+      const orig = span.dataset.orig;
+      if (typeof orig !== "string") return;
+      const next = convertPriceText(orig, rate, vatMultiplier, currency);
+      if (span.textContent !== next) span.textContent = next;
+    });
+  } else {
+    for (const child of Array.from(el.childNodes)) {
+      if (child.nodeType !== Node.TEXT_NODE) continue;
+      const orig = child.nodeValue;
+      if (!orig || !orig.includes("$")) continue;
+      const next = convertPriceText(orig, rate, vatMultiplier, currency);
+      if (next === orig) continue;
+      const span = document.createElement("span");
+      span.className = REPLACED_CLASS;
+      span.dataset.orig = orig;
+      span.textContent = next;
+      child.replaceWith(span);
+    }
+  }
+  // Replacement supersedes the bracketed suffix.
+  clearSuffixInside(el);
+}
+
+function restoreReplacementsInside(el) {
+  el.querySelectorAll(`:scope > span.${REPLACED_CLASS}`).forEach((span) => {
+    const orig = span.dataset.orig;
+    span.replaceWith(document.createTextNode(typeof orig === "string" ? orig : span.textContent));
+  });
+}
+
+// Document-wide restore: replaced elements have no "$" in their visible text,
+// so findTargets won't find them when the toggle flips back to bracket mode.
+// Run this before findTargets to bring the originals back first.
+function restoreAllReplacements(root = document) {
+  root.querySelectorAll(`span.${REPLACED_CLASS}`).forEach((span) => {
+    const orig = span.dataset.orig;
+    span.replaceWith(document.createTextNode(typeof orig === "string" ? orig : span.textContent));
+  });
+}
+
 // ── Loading indicator ─────────────────────────────────────────────────────────
 let loadingIndicator = null;
 const LOADING_CLASS    = "kesch-loading-indicator";
@@ -266,12 +340,17 @@ function updateTaxNotice(rate, vatPct, currency) {
 }
 
 // ── Converters ────────────────────────────────────────────────────────────────
-function convertStorePriceItem(el, rate, vatMultiplier, currency) {
+function convertStorePriceItem(el, rate, vatMultiplier, currency, replace) {
   const raw = (el.textContent || "").trim();
   if (!raw.includes("CAD") || !raw.includes("$")) return;
 
   const cad = parseAmountFromDollarText(raw);
   if (cad === null) return;
+
+  if (replace) {
+    applyReplacementInside(el, rate, vatMultiplier, currency);
+    return;
+  }
 
   // Use upsertSuffixInside rather than overwriting textContent: the new
   // <sale-price> / <compare-at-price> wrappers contain an .sr-only child
@@ -279,12 +358,17 @@ function convertStorePriceItem(el, rate, vatMultiplier, currency) {
   upsertSuffixInside(el, ` (~ ${formatCurrency(cad * rate * vatMultiplier, currency)})`);
 }
 
-function convertCartPrice(el, rate, vatMultiplier, currency) {
+function convertCartPrice(el, rate, vatMultiplier, currency, replace) {
   const raw = (el.textContent || "").trim();
   if (!raw.includes("$")) { clearSuffixInside(el); return; }
 
   const cad = parseAmountFromDollarText(raw);
   if (cad === null) return;
+
+  if (replace) {
+    applyReplacementInside(el, rate, vatMultiplier, currency);
+    return;
+  }
 
   // Discount badges display the amount as "(-$40.00)". parseAmountFromDollarText
   // only captures digits, so detect a leading minus immediately before the "$"
@@ -504,35 +588,39 @@ async function updateAll() {
   showLoadingIndicator(currency);
 
   try {
-    // Fetch rates, VAT multiplier, and raw VAT % in parallel (currency already known).
-    const [rates, vatMultiplier, vatPct] = await Promise.all([
+    // Fetch rates, VAT multiplier, raw VAT %, and replace-mode flag in parallel
+    // (currency already known).
+    const [rates, vatMultiplier, vatPct, replacePrices] = await Promise.all([
       getRatesFromBackground(),
       getVatMultiplier(),
       getVatPercent(),
+      getReplacePrices(),
     ]);
 
     const rate = rates[currency];
     if (typeof rate !== "number") throw new Error(`No rate available for ${currency}`);
 
+    // Replace mode is store + cart only; checkout always uses the bracketed
+    // suffix. When toggled off (or on checkout), restore wrapped originals
+    // first so findTargets sees the "$" amounts again.
+    const replace = replacePrices && kind !== "checkout";
+    if (!replace) restoreAllReplacements();
+
     const targets = findTargets(kind);
 
     if (kind === "store") {
       targets.forEach((n) => {
-        // Cart drawer overlay elements (Total, free-shipping bar) live inside
-        // <cart-drawer> / <free-shipping-bar> and don't always include "CAD".
-        // Dispatch them through the cart converter so the suffix is appended
-        // regardless of the strict "CAD" check used for store price-list items.
         // Cart-drawer / free-shipping-bar text and sale badges ("$19.99 sale")
         // don't carry a "CAD" suffix, so route them through the cart converter
         // — convertStorePriceItem would skip them.
         if (n.closest("cart-drawer, free-shipping-bar") || n.matches?.("span.badge")) {
-          convertCartPrice(n, rate, vatMultiplier, currency);
+          convertCartPrice(n, rate, vatMultiplier, currency, replace);
         } else {
-          convertStorePriceItem(n, rate, vatMultiplier, currency);
+          convertStorePriceItem(n, rate, vatMultiplier, currency, replace);
         }
       });
     } else if (kind === "cart") {
-      targets.forEach((n) => convertCartPrice(n, rate, vatMultiplier, currency));
+      targets.forEach((n) => convertCartPrice(n, rate, vatMultiplier, currency, replace));
     } else if (kind === "checkout") {
       targets.forEach((n) => convertCheckout(n, rate, currency));
       if (pageLoaded) scheduleTaxNotice(rate, vatPct, currency);
@@ -602,13 +690,19 @@ const obs = new MutationObserver((mutations) => {
     // Loading indicator
     if (m.target === loadingIndicator ||
         (m.target instanceof Element && m.target.classList.contains(LOADING_CLASS))) return true;
-    // Suffix span itself had a child added/removed (e.g. first textContent set)
-    if (m.target instanceof Element && m.target.classList.contains(SUFFIX_CLASS)) return true;
-    // Text node inside a suffix span or tax-notice changed value (characterData mutation)
+    // Suffix / replaced span itself had a child added/removed (e.g. first textContent set)
+    if (m.target instanceof Element &&
+        (m.target.classList.contains(SUFFIX_CLASS) ||
+         m.target.classList.contains(REPLACED_CLASS))) return true;
+    // Text node inside a suffix / replaced / tax-notice span changed value
+    // (characterData mutation from re-converting on currency change)
     if (m.type === "characterData" &&
         (m.target.parentElement?.classList.contains(SUFFIX_CLASS) ||
+         m.target.parentElement?.classList.contains(REPLACED_CLASS) ||
          m.target.parentElement?.classList.contains(TAX_NOTICE_CLASS))) return true;
-    // childList: the only added/removed nodes are our own suffix/loading spans
+    // childList: the only added/removed nodes are our own suffix/loading spans,
+    // OR a wrap/unwrap pair (replaced span ↔ original text node) from
+    // applyReplacementInside / restoreReplacementsInside.
     if (m.type === "childList") {
       const nodes = [...m.addedNodes, ...m.removedNodes];
       if (nodes.length > 0 && nodes.every((n) =>
@@ -617,6 +711,16 @@ const obs = new MutationObserver((mutations) => {
          n.classList.contains(LOADING_CLASS) ||
          n.classList.contains(TAX_NOTICE_CLASS))
       )) return true;
+
+      const added = [...m.addedNodes];
+      const removed = [...m.removedNodes];
+      const isReplacedEl = (n) => n instanceof Element && n.classList.contains(REPLACED_CLASS);
+      const isText = (n) => n.nodeType === Node.TEXT_NODE;
+      // Wrap: text node → replaced span. Restore: replaced span → text node.
+      if ((added.some(isReplacedEl) && removed.every((n) => isText(n) || isReplacedEl(n))) ||
+          (removed.some(isReplacedEl) && added.every((n) => isText(n) || isReplacedEl(n)))) {
+        return true;
+      }
     }
     return false;
   });
