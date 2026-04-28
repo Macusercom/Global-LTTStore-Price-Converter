@@ -199,11 +199,11 @@ function clearSuffixInside(el) {
 // "$19.99 sale" → "€14.95 sale" and "Pen (-$40.00)" → "Pen (-€29.96)".
 function convertPriceText(text, rate, vatMultiplier, currency) {
   return text.replace(
-    /(-?)\s*\$[\s ]*([0-9]+(?:[., ][0-9]+)*)(\s*CAD)?/g,
+    /(-\s*)?\$[\s ]*([0-9]+(?:[., ][0-9]+)*)(\s*CAD)?/g,
     (match, sign) => {
       const cad = parseAmountFromDollarText(match);
       if (cad === null) return match;
-      const local = (sign === "-" ? -1 : 1) * cad * rate * vatMultiplier;
+      const local = (sign ? -1 : 1) * cad * rate * vatMultiplier;
       return formatCurrency(local, currency);
     },
   );
