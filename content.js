@@ -547,22 +547,32 @@ function findTargets(kind, root = document) {
       "[role='cell'] s",
     ];
     const out = new Set();
+    // Require both "$" and a digit in the same node — otherwise per-character
+    // spans from Shopify's animated digit-flip total ("$", " ", "7", "9", …
+    // each in their own <span>) get collected individually, and the innermost
+    // filter below picks one of those un-parseable single-char spans.
+    const hasPrice = (n) => {
+      const t = n.textContent || "";
+      return t.includes("$") && /[0-9]/.test(t);
+    };
     for (const sel of selectors) {
-      root.querySelectorAll(sel).forEach((n) => {
-        if ((n.textContent || "").includes("$")) out.add(n);
-      });
+      root.querySelectorAll(sel).forEach((n) => { if (hasPrice(n)) out.add(n); });
     }
     // Catch leaf-text price nodes anywhere on the page. <p> and <s> are
     // included because the current Shopify checkout uses them for the
     // discount-code line ("SHIPSTORM DEAL ... (-$ 20,00)") and for the
     // struck-through original price ("$ 39,99") next to a discounted total.
     root.querySelectorAll("span, strong, p, s").forEach((n) => {
-      const t = n.textContent || "";
-      if (!t.includes("$") || !/[0-9]/.test(t)) return;
       if (n.childElementCount > 0) return;
-      out.add(n);
+      if (hasPrice(n)) out.add(n);
     });
-    return Array.from(out);
+    // Drop ancestors when a descendant is also a target. The Total row on
+    // Shopify checkout nests the price in several wrappers ([role='cell'] >
+    // span > strong > span), each of which contains the "$" text — without
+    // this filter every level gets its own converted-price suffix, so the
+    // user sees "(~ € 76,75)" repeated 2–3× next to the total.
+    const all = Array.from(out);
+    return all.filter((n) => !all.some((m) => m !== n && n.contains(m)));
   }
 
   return [];
