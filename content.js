@@ -257,6 +257,20 @@ function restoreAllReplacements(root = document) {
   });
 }
 
+// Document-wide re-convert: in replace mode the wrapped prices no longer
+// contain "$" / "CAD", so findTargets can't see them on a subsequent run.
+// When VAT or currency changes while replace mode stays on, re-convert every
+// existing replacement in place from its stashed data-orig so the displayed
+// amounts update without a full page refresh.
+function reconvertAllReplacements(rate, vatMultiplier, currency, root = document) {
+  root.querySelectorAll(`span.${REPLACED_CLASS}`).forEach((span) => {
+    const orig = span.dataset.orig;
+    if (typeof orig !== "string") return;
+    const next = convertPriceText(orig, rate, vatMultiplier, currency);
+    if (span.textContent !== next) span.textContent = next;
+  });
+}
+
 // ── Loading indicator ─────────────────────────────────────────────────────────
 let loadingIndicator = null;
 const LOADING_CLASS    = "kesch-loading-indicator";
@@ -614,7 +628,14 @@ async function updateAll() {
     // suffix. When toggled off (or on checkout), restore wrapped originals
     // first so findTargets sees the "$" amounts again.
     const replace = replacePrices && kind !== "checkout";
-    if (!replace) restoreAllReplacements();
+    if (!replace) {
+      restoreAllReplacements();
+    } else {
+      // Already-replaced elements have lost their "$"/"CAD" text, so findTargets
+      // below won't pick them up. Re-convert them in place first so a VAT /
+      // currency change applies live instead of needing a full site refresh.
+      reconvertAllReplacements(rate, vatMultiplier, currency);
+    }
 
     const targets = findTargets(kind);
 
